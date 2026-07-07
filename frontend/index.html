@@ -16,7 +16,7 @@
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p><strong>Precision extraction</strong> — reads the exact digital text layer when available (Unicode &amp; Preeti/Kantipur fonts). OCR is used only for scanned pages. Runs in your browser.</p>
+            <p><strong>Maximum Quality OCR</strong> — renders every page at high resolution (400 DPI) and uses Tesseract with best Nepali language model. Accuracy prioritized over speed. Large files (300 pages) may take 10-15 minutes.</p>
             <p id="device-badge" class="device-badge">Detecting your device…</p>
         </header>
 
@@ -33,7 +33,7 @@
                 <div class="upload-content">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
-                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · exact text from digital PDFs; compressed OCR for scans</p>
+                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · Maximum quality OCR · Large files may take 10-15 minutes</p>
                 </div>
                 <div id="file-info" class="file-info hidden">
                     <span id="file-name"></span>
@@ -52,26 +52,16 @@
             <!-- Controls -->
             <div class="controls">
                 <div class="input-group">
-                    <label for="mode-select">Extraction Mode</label>
-                    <select id="mode-select">
-                        <option value="direct" selected>Direct (95-100% accuracy)</option>
-                        <option value="auto">Auto (direct + OCR fallback)</option>
-                        <option value="ocr">OCR Only (for scans)</option>
-                    </select>
-                </div>
-                
-                <div class="input-group">
                     <label for="lang-select">Language</label>
                     <select id="lang-select">
-                        <option value="auto" selected>Auto Detect</option>
+                        <option value="nep" selected>Nepali + English</option>
                         <option value="eng">English Only</option>
-                        <option value="nep">Nepali Only</option>
-                        <option value="eng+nep">English + Nepali</option>
+                        <option value="auto">Auto Detect</option>
                     </select>
                 </div>
                 
                 <button id="extract-btn" disabled>
-                    <span class="btn-text">Extract Text</span>
+                    <span class="btn-text">Extract Text (Max Quality)</span>
                     <span class="spinner hidden"></span>
                 </button>
             </div>

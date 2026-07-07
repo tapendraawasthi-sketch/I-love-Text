@@ -1,5 +1,8 @@
 """
 Configuration constants and startup setup for the TextExtract backend.
+
+MAXIMUM QUALITY MODE - accuracy over speed.
+300 pages may take 10-15 minutes. That's acceptable.
 """
 import os
 import pytesseract
@@ -12,7 +15,7 @@ ALLOWED_EXTENSIONS: set[str] = {
     ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"
 }
 
-# Tesseract config
+# Tesseract config - MAXIMUM QUALITY
 TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "tesseract")
 TESSDATA_PREFIX: str = os.getenv(
     "TESSDATA_PREFIX",
@@ -20,64 +23,66 @@ TESSDATA_PREFIX: str = os.getenv(
 )
 
 # OEM 1 = LSTM only (best for Devanagari), PSM 3 = fully automatic
+# Added more parameters for better accuracy
 DEFAULT_OCR_CONFIG: str = (
     r"--oem 1 --psm 3 "
     r"-c preserve_interword_spaces=1 "
     r"-c textord_tabfind_find_tables=1 "
-    r"-c textord_heavy_nr=1"
+    r"-c textord_heavy_nr=1 "
+    r"-c tessedit_do_invert=0 "
+    r"-c textord_min_linesize=2.5"
 )
 
-# Render free tier: lower DPI + sequential pages avoids OOM (502 errors).
-PDF_RENDER_DPI: int = int(os.getenv("PDF_RENDER_DPI", "300" if _IS_RENDER else "340"))
-PDF_RENDER_DPI_HIGH: int = int(os.getenv("PDF_RENDER_DPI_HIGH", "380" if _IS_RENDER else "420"))
-PDF_RETRY_CONFIDENCE: float = float(os.getenv("PDF_RETRY_CONFIDENCE", "62"))
-HIGH_DPI_RETRY_MAX_PAGES: int = int(os.getenv("HIGH_DPI_RETRY_MAX_PAGES", "15"))
+# MAXIMUM QUALITY DPI settings - no compromises
+PDF_RENDER_DPI: int = int(os.getenv("PDF_RENDER_DPI", "400"))
+PDF_RENDER_DPI_HIGH: int = int(os.getenv("PDF_RENDER_DPI_HIGH", "450"))
+PDF_RETRY_CONFIDENCE: float = float(os.getenv("PDF_RETRY_CONFIDENCE", "75"))
+HIGH_DPI_RETRY_MAX_PAGES: int = int(os.getenv("HIGH_DPI_RETRY_MAX_PAGES", "999"))
 
-# Sanitization: PDF → JPEG images → image-only PDF → OCR (removes font bias, smaller).
-# Higher DPI for Nepali text accuracy (Devanagari characters need more detail).
-SANITIZE_DPI: int = int(os.getenv("SANITIZE_DPI", "260" if _IS_RENDER else "300"))
-SANITIZE_DPI_MEDIUM: int = int(os.getenv("SANITIZE_DPI_MEDIUM", "240" if _IS_RENDER else "280"))
-SANITIZE_DPI_LARGE: int = int(os.getenv("SANITIZE_DPI_LARGE", "220" if _IS_RENDER else "260"))
-SANITIZE_JPEG_QUALITY: int = int(os.getenv("SANITIZE_JPEG_QUALITY", "88"))
-SANITIZE_JPEG_MIN_QUALITY: int = int(os.getenv("SANITIZE_JPEG_MIN_QUALITY", "82"))
-SANITIZE_MAX_JPEG_BYTES: int = int(os.getenv("SANITIZE_MAX_JPEG_BYTES", "900000"))
+# Sanitization DPI - MAXIMUM for Devanagari clarity
+SANITIZE_DPI: int = int(os.getenv("SANITIZE_DPI", "400"))
+SANITIZE_DPI_MEDIUM: int = int(os.getenv("SANITIZE_DPI_MEDIUM", "380"))
+SANITIZE_DPI_LARGE: int = int(os.getenv("SANITIZE_DPI_LARGE", "350"))
 
-# Fast path uses one PSM; retries only add modes when confidence is weak.
+# JPEG quality - keep maximum to preserve text edges
+SANITIZE_JPEG_QUALITY: int = int(os.getenv("SANITIZE_JPEG_QUALITY", "95"))
+SANITIZE_JPEG_MIN_QUALITY: int = int(os.getenv("SANITIZE_JPEG_MIN_QUALITY", "92"))
+SANITIZE_MAX_JPEG_BYTES: int = int(os.getenv("SANITIZE_MAX_JPEG_BYTES", "2000000"))
+
+# Multiple PSM modes for retries - try different segmentation
 OCR_PSM_PRIMARY: int = 3
-OCR_PSM_RETRY: tuple[int, ...] = (4, 6)
+OCR_PSM_RETRY: tuple[int, ...] = (6, 4, 11, 12)
 
 # Gap threshold for tab-separated table columns during layout reconstruction
-COLUMN_GAP_RATIO: float = float(os.getenv("COLUMN_GAP_RATIO", "1.5"))
+COLUMN_GAP_RATIO: float = float(os.getenv("COLUMN_GAP_RATIO", "1.3"))
 
-# Retry thresholds
-OCR_GOOD_CONFIDENCE: float = float(os.getenv("OCR_GOOD_CONFIDENCE", "70"))
-OCR_RETRY_CONFIDENCE: float = float(os.getenv("OCR_RETRY_CONFIDENCE", "60"))
-OCR_MIN_WORDS: int = int(os.getenv("OCR_MIN_WORDS", "4"))
+# Retry thresholds - AGGRESSIVE retries for quality
+OCR_GOOD_CONFIDENCE: float = float(os.getenv("OCR_GOOD_CONFIDENCE", "85"))
+OCR_RETRY_CONFIDENCE: float = float(os.getenv("OCR_RETRY_CONFIDENCE", "75"))
+OCR_MIN_WORDS: int = int(os.getenv("OCR_MIN_WORDS", "2"))
 
-# Image normalization keeps OCR fast on huge pages while preserving small text.
-MIN_OCR_DIMENSION: int = int(os.getenv("MIN_OCR_DIMENSION", "2000" if _IS_RENDER else "2200"))
-MAX_OCR_DIMENSION: int = int(os.getenv("MAX_OCR_DIMENSION", "3200" if _IS_RENDER else "3800"))
+# Image dimensions - LARGER for better text clarity
+MIN_OCR_DIMENSION: int = int(os.getenv("MIN_OCR_DIMENSION", "2800"))
+MAX_OCR_DIMENSION: int = int(os.getenv("MAX_OCR_DIMENSION", "5000"))
 
-# On Render free (512MB), parallel Tesseract workers cause OOM → 502.
-_DEFAULT_WORKERS = "1" if _IS_RENDER else str(min(2, os.cpu_count() or 2))
-OCR_PAGE_WORKERS: int = int(os.getenv("OCR_PAGE_WORKERS", _DEFAULT_WORKERS))
-
-# Only parallelize very small documents.
-PARALLEL_PAGE_THRESHOLD: int = int(os.getenv("PARALLEL_PAGE_THRESHOLD", "2"))
+# Sequential processing for stability
+OCR_PAGE_WORKERS: int = 1
+PARALLEL_PAGE_THRESHOLD: int = 1
 
 
 def render_dpi_for_page_count(page_count: int) -> int:
-    """Use slightly lower DPI on very large documents to finish within time limits."""
-    if page_count > 150:
-        return int(os.getenv("PDF_RENDER_DPI_LARGE", "240"))
-    if page_count > 50:
-        return int(os.getenv("PDF_RENDER_DPI_MEDIUM", "270"))
+    """High DPI for all documents - quality over speed."""
+    # Even for large documents, use high DPI
+    if page_count > 200:
+        return 350
+    if page_count > 100:
+        return 380
     return PDF_RENDER_DPI
 
 
 def is_fast_ocr_mode(page_count: int) -> bool:
-    """Skip expensive retries on large documents."""
-    return page_count > int(os.getenv("FAST_OCR_PAGE_THRESHOLD", "30"))
+    """NEVER use fast mode - always prioritize quality."""
+    return False
 
 
 def configure_tesseract() -> None:

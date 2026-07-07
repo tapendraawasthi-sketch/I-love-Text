@@ -24,42 +24,44 @@
       tier = 'balanced';
     }
 
+    // MAXIMUM QUALITY MODE - accuracy over speed
+    // 300 pages may take 10-15 minutes. That's acceptable.
     const profiles = {
       high: {
         tier: 'high',
-        maxWorkers: Math.min(6, Math.max(4, cores - 4)),
+        maxWorkers: Math.min(4, Math.max(2, cores - 2)),
+        jpegQuality: 0.98,
+        sharpen: true,
+        retryWeakPages: true,
+        weakConfidence: 80,
+        retryScaleBoost: 1.4,
+        scales: { small: 3.5, medium: 3.2, large: 3.0, xlarge: 2.8 },
+        docxScale: 3.0,
+        label: 'Maximum quality (may take 10-15 min for large files)',
+      },
+      balanced: {
+        tier: 'balanced',
+        maxWorkers: Math.min(3, Math.max(2, cores - 1)),
+        jpegQuality: 0.97,
+        sharpen: true,
+        retryWeakPages: true,
+        weakConfidence: 75,
+        retryScaleBoost: 1.35,
+        scales: { small: 3.2, medium: 3.0, large: 2.8, xlarge: 2.6 },
+        docxScale: 2.8,
+        label: 'High quality mode',
+      },
+      safe: {
+        tier: 'safe',
+        maxWorkers: 2,
         jpegQuality: 0.96,
         sharpen: true,
         retryWeakPages: true,
         weakConfidence: 70,
-        retryScaleBoost: 1.25,
-        scales: { small: 2.8, medium: 2.4, large: 2.2, xlarge: 2.0 },
+        retryScaleBoost: 1.3,
+        scales: { small: 3.0, medium: 2.8, large: 2.6, xlarge: 2.4 },
         docxScale: 2.5,
-        label: 'High quality mode (optimized for Nepali accuracy)',
-      },
-      balanced: {
-        tier: 'balanced',
-        maxWorkers: Math.min(4, Math.max(2, cores - 2)),
-        jpegQuality: 0.94,
-        sharpen: true,
-        retryWeakPages: true,
-        weakConfidence: 65,
-        retryScaleBoost: 1.2,
-        scales: { small: 2.5, medium: 2.2, large: 2.0, xlarge: 1.85 },
-        docxScale: 2.25,
-        label: 'Balanced mode (good accuracy)',
-      },
-      safe: {
-        tier: 'safe',
-        maxWorkers: Math.min(2, cores),
-        jpegQuality: 0.92,
-        sharpen: true,
-        retryWeakPages: true,
-        weakConfidence: 60,
-        retryScaleBoost: 1.15,
-        scales: { small: 2.3, medium: 2.0, large: 1.85, xlarge: 1.7 },
-        docxScale: 2.0,
-        label: 'Safe mode (accuracy prioritized)',
+        label: 'Quality mode',
       },
     };
 
