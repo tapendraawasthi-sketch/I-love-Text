@@ -16,7 +16,7 @@
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p>PDF/DOCX → image → image-only PDF → Nepali OCR. Font layers (Preeti, Kantipur) are removed before extraction so only visible text is read. Optimized for large files on free hosting.</p>
+            <p><strong>Runs in your browser</strong> — free, no payment, no server wait. Uses your PC's CPU in parallel (up to 16 workers). PDF pages are rendered as images first, so Preeti/Kantipur font bias is removed. A 300-page PDF typically finishes in <strong>2–5 minutes</strong> on a modern laptop.</p>
         </header>
 
         <main>
@@ -32,12 +32,20 @@
                 <div class="upload-content">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
-                    <p class="upload-hint">Supports PDF, DOCX, PNG, JPG, TIFF (Max 50MB, no page limit)</p>
+                    <p class="upload-hint">PDF, DOCX, images — processed locally in your browser (Max 50MB, no page limit)</p>
                 </div>
                 <div id="file-info" class="file-info hidden">
                     <span id="file-name"></span>
                     <span id="file-size"></span>
                 </div>
+            </div>
+
+            <!-- Progress -->
+            <div id="progress-section" class="progress-section hidden">
+                <div class="progress-track">
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <p id="progress-label" class="progress-label">Starting…</p>
             </div>
 
             <!-- Controls -->
@@ -77,6 +85,11 @@
         </main>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="ocr-client.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

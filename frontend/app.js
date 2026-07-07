@@ -4,37 +4,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInfo = document.getElementById('file-info');
     const fileName = document.getElementById('file-name');
     const fileSize = document.getElementById('file-size');
-    
+
     const extractBtn = document.getElementById('extract-btn');
     const langSelect = document.getElementById('lang-select');
     const btnText = document.querySelector('.btn-text');
     const spinner = document.querySelector('.spinner');
-    
+
     const errorBanner = document.getElementById('error-banner');
     const errorMessage = document.getElementById('error-message');
-    
+
     const resultSection = document.getElementById('result-section');
     const resultText = document.getElementById('result-text');
     const copyBtn = document.getElementById('copy-btn');
     const downloadBtn = document.getElementById('download-btn');
     const metaPanel = document.getElementById('meta-panel');
 
+    const progressSection = document.getElementById('progress-section');
+    const progressFill = document.getElementById('progress-fill');
+    const progressLabel = document.getElementById('progress-label');
+
     let currentFile = null;
     const MAX_MB = 50;
 
-    // --- File Selection ---
-    
     uploadZone.addEventListener('click', () => fileInput.click());
-    
+
     uploadZone.addEventListener('dragover', (e) => {
         e.preventDefault();
         uploadZone.classList.add('dragover');
     });
-    
+
     uploadZone.addEventListener('dragleave', () => {
         uploadZone.classList.remove('dragover');
     });
-    
+
     uploadZone.addEventListener('drop', (e) => {
         e.preventDefault();
         uploadZone.classList.remove('dragover');
@@ -42,17 +44,20 @@ document.addEventListener('DOMContentLoaded', () => {
             handleFile(e.dataTransfer.files[0]);
         }
     });
-    
+
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length) {
             handleFile(fileInput.files[0]);
         }
     });
 
+    function getExt(file) {
+        return '.' + file.name.split('.').pop().toLowerCase();
+    }
+
     function handleFile(file) {
         hideError();
-        
-        // Client validation
+
         const sizeMb = file.size / (1024 * 1024);
         if (sizeMb > MAX_MB) {
             showError(`File is too large (${sizeMb.toFixed(1)}MB). Max allowed is ${MAX_MB}MB.`);
@@ -62,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const allowedExts = ['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp'];
-        const ext = '.' + file.name.split('.').pop().toLowerCase();
+        const ext = getExt(file);
         if (!allowedExts.includes(ext)) {
             showError(`File type ${ext} not supported.`);
             currentFile = null;
@@ -71,13 +76,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         currentFile = file;
-        
-        // Show file info
         fileName.textContent = file.name;
         fileSize.textContent = `${sizeMb.toFixed(2)} MB`;
         document.querySelector('.upload-content').classList.add('hidden');
         fileInfo.classList.remove('hidden');
-        
         updateUI();
     }
 
@@ -89,108 +91,83 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- API Request ---
-    
+    function setProgress(done, total, label) {
+        const pct = total ? Math.round((done / total) * 100) : 0;
+        progressFill.style.width = `${pct}%`;
+        progressLabel.textContent = label || `${pct}%`;
+    }
+
+    function showProgress() {
+        progressSection.classList.remove('hidden');
+        setProgress(0, 100, 'Starting…');
+    }
+
+    function hideProgress() {
+        progressSection.classList.add('hidden');
+    }
+
     extractBtn.addEventListener('click', async () => {
         if (!currentFile) return;
 
-        // UI Loading state
         hideError();
         resultSection.classList.add('hidden');
         extractBtn.disabled = true;
-        btnText.textContent = 'Extracting… (300+ page PDFs can take 1–2 hours)';
-        btnText.classList.remove('hidden');
+        btnText.textContent = 'Processing in your browser…';
         spinner.classList.remove('hidden');
+        showProgress();
 
-        const formData = new FormData();
-        formData.append('file', currentFile);
-        formData.append('lang', langSelect.value);
+        const lang = langSelect.value;
+        const ext = getExt(currentFile);
+        const onProgress = (done, total, label) => setProgress(done, total, label);
 
         try {
-            const controller = new AbortController();
-            const timeoutMs = 3 * 60 * 60 * 1000;
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-            const response = await fetch('/api/extract', {
-                method: 'POST',
-                body: formData,
-                signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
-
-            const data = await response.json().catch(() => ({}));
-
-            if (!response.ok) {
-                if (response.status === 502 || response.status === 503) {
-                    throw new Error(
-                        'Server overloaded or timed out (502). Large PDFs take several minutes on the free tier — try splitting into smaller files, or retry in a moment.'
-                    );
-                }
-                if (response.status === 507) {
-                    throw new Error(data.detail || 'Server ran out of memory processing this file. Try a smaller PDF.');
-                }
-                throw new Error(data.detail || data.error || `Server error (${response.status})`);
+            if (!window.TextExtractOCR?.isAvailable()) {
+                throw new Error('OCR engine not loaded. Check your internet connection and refresh.');
             }
 
-            if (!data.success) {
-                throw new Error(data.detail || 'Extraction failed.');
-            }
-
-            // Success
-            showResult(data);
-
-        } catch (err) {
-            if (err.name === 'AbortError') {
-                showError('Request timed out after 3 hours. The server may still be processing — check Render logs, or split the PDF.');
+            let result;
+            if (ext === '.pdf') {
+                result = await window.TextExtractOCR.extractPdf(currentFile, lang, onProgress);
+            } else if (ext === '.docx') {
+                result = await window.TextExtractOCR.extractDocx(currentFile, lang, onProgress);
             } else {
-                showError(err.message);
+                result = await window.TextExtractOCR.extractImage(currentFile, lang, onProgress);
             }
+
+            showResult({
+                text: result.text,
+                meta: result.meta,
+            });
+        } catch (err) {
+            showError(err.message || 'Extraction failed.');
         } finally {
-            // Restore UI
             extractBtn.disabled = false;
             btnText.textContent = 'Extract Text';
-            btnText.classList.remove('hidden');
             spinner.classList.add('hidden');
+            hideProgress();
         }
     });
 
-    // --- Result Handling ---
-    
     function showResult(data) {
         resultText.value = data.text || '';
         resultSection.classList.remove('hidden');
-        
-        // Build Meta panel
+
         metaPanel.innerHTML = '';
         if (data.meta) {
             const m = data.meta;
             if (m.pages) addMetaItem('Pages', m.pages);
-            if (m.method_per_page) {
-                const ocrCount = m.method_per_page.filter(
-                    x => x === 'image_pdf_ocr' || x === 'image_ocr' || x === 'ocr'
-                ).length;
-                const methodLabel = m.pipeline === 'pdf_to_image_to_pdf_to_ocr'
-                    ? 'PDF → Image → PDF → OCR'
-                    : 'Image OCR';
-                addMetaItem('Extraction Method', `${methodLabel} on all ${ocrCount} page(s)`);
-            } else if (m.method) {
-                const label = m.method === 'image_pdf_ocr'
-                    ? 'PDF → Image → PDF → OCR'
-                    : m.method === 'image_ocr'
-                        ? 'Image OCR'
-                        : m.method.toUpperCase();
-                addMetaItem('Extraction Method', label);
+            if (m.processed_locally) {
+                addMetaItem('Processing', 'In your browser (free, no server upload)');
             }
-            if (m.sanitize_dpi) {
-                addMetaItem('Sanitize DPI', m.sanitize_dpi);
-            }
-            if (m.mean_confidence) addMetaItem('OCR Confidence', `${m.mean_confidence.toFixed(1)}%`);
+            if (m.workers) addMetaItem('Parallel workers', m.workers);
+            if (m.render_scale) addMetaItem('Render scale', m.render_scale + '×');
+            if (m.method) addMetaItem('Method', m.method.replace(/_/g, ' '));
+            if (m.mean_confidence) addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
         }
-        
-        // Scroll to results
+
         resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    
+
     function addMetaItem(label, value) {
         const div = document.createElement('div');
         div.className = 'meta-item';
@@ -208,15 +185,13 @@ document.addEventListener('DOMContentLoaded', () => {
         errorBanner.classList.add('hidden');
     }
 
-    // --- Actions ---
-    
     copyBtn.addEventListener('click', () => {
         if (!resultText.value) return;
         navigator.clipboard.writeText(resultText.value)
             .then(() => {
                 const original = copyBtn.textContent;
                 copyBtn.textContent = 'Copied!';
-                setTimeout(() => copyBtn.textContent = original, 2000);
+                setTimeout(() => { copyBtn.textContent = original; }, 2000);
             })
             .catch(() => alert('Failed to copy text.'));
     });
@@ -227,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        const baseName = currentFile ? currentFile.name.replace(/\.[^/.]+$/, "") : "extracted";
+        const baseName = currentFile ? currentFile.name.replace(/\.[^/.]+$/, '') : 'extracted';
         a.download = `${baseName}_extracted.txt`;
         document.body.appendChild(a);
         a.click();
