@@ -61,15 +61,16 @@ async def value_error_handler(request: Request, exc: ValueError):
 @app.get("/api/health")
 async def health_check():
     langs = available_languages()
-    try:
-        from npttf2utf import npttf2utf
-        legacy_support = True
-    except ImportError:
-        legacy_support = False
+    
+    # Check legacy font conversion
+    from app.legacy_fonts.converter import check_conversion_status
+    conversion_status = check_conversion_status()
+    
     return {
         "status": "ok",
         "languages": langs,
-        "legacy_font_support": legacy_support,
+        "legacy_font_support": True,  # Always true now with built-in
+        "conversion": conversion_status,
     }
 
 
