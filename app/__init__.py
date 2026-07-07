@@ -1,0 +1,3 @@
+"""
+TextExtract application package.
+"""
