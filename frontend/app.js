@@ -154,7 +154,13 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // Convert to Image PDF
+    function safePdfDownloadName(originalName) {
+        const base = originalName.replace(/\.[^/.]+$/, '');
+        const ascii = base.replace(/[^\w.\- ]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        return `${ascii || 'document'}_image.pdf`;
+    }
+
+    // Convert to Image PDF (runs in browser — same as OCR)
     convertPdfBtn.addEventListener('click', async () => {
         if (!currentFile) return;
         
@@ -164,54 +170,39 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        if (!window.TextExtractOCR?.isImagePdfAvailable?.()) {
+            showError('PDF conversion libraries not loaded. Check your internet connection and refresh.');
+            return;
+        }
+
         hideError();
         convertPdfBtn.disabled = true;
         extractBtn.disabled = true;
         const originalText = convertPdfBtn.textContent;
         convertPdfBtn.textContent = 'Converting...';
         showProgress();
-        setProgress(30, 100, 'Converting pages to images...');
+
+        const onProgress = (done, total, label) => setProgress(done, total, label);
 
         try {
-            const formData = new FormData();
-            formData.append('file', currentFile);
-            formData.append('dpi', '350');
-            formData.append('quality', '92');
+            const result = await window.TextExtractOCR.convertToImagePdf(
+                currentFile,
+                onProgress,
+                { jpegQuality: 0.92 },
+            );
 
-            const response = await fetch('/api/convert-to-image-pdf', {
-                method: 'POST',
-                body: formData,
-            });
+            setProgress(result.meta.pages, result.meta.pages, 'Download ready!');
 
-            setProgress(80, 100, 'Preparing download...');
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.detail || `Server error: ${response.status}`);
-            }
-
-            // Get the PDF blob
-            const blob = await response.blob();
-            
-            // Get metadata from headers
-            const pages = response.headers.get('X-Pages');
-            const outputSizeMb = response.headers.get('X-Output-Size-MB');
-            
-            setProgress(100, 100, 'Download ready!');
-
-            // Create download link
-            const url = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(result.blob);
             const a = document.createElement('a');
             a.href = url;
-            const baseName = currentFile.name.replace(/\.[^/.]+$/, '');
-            a.download = `${baseName}_image.pdf`;
+            a.download = safePdfDownloadName(currentFile.name);
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            // Show success message
-            showConversionSuccess(pages, outputSizeMb);
+            showConversionSuccess(result.meta);
 
         } catch (err) {
             showError(err.message || 'Conversion failed.');
@@ -223,14 +214,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    function showConversionSuccess(pages, sizeMb) {
+    function showConversionSuccess(meta) {
         resultSection.classList.remove('hidden');
-        resultText.value = `✓ Image PDF created successfully!\n\nPages: ${pages || 'N/A'}\nSize: ${sizeMb || 'N/A'} MB\n\nThe PDF has been downloaded. You can now use it with:\n• ChatGPT (Vision)\n• Claude\n• Google Gemini\n• Any AI with image/document understanding`;
+        resultText.value = `✓ Image PDF created successfully!\n\nPages: ${meta.pages || 'N/A'}\nSize: ${meta.output_size_mb || 'N/A'} MB\n\nThe PDF has been downloaded. You can now use it with:\n• ChatGPT (Vision)\n• Claude\n• Google Gemini\n• Any AI with image/document understanding`;
         metaPanel.innerHTML = '';
         addMetaItem('Format', 'Image-only PDF (no text layer)');
-        addMetaItem('Pages converted', pages || 'N/A');
-        addMetaItem('Output size', (sizeMb || 'N/A') + ' MB');
-        addMetaItem('DPI', '350 (high quality)');
+        addMetaItem('Processing', 'In your browser');
+        addMetaItem('Pages converted', meta.pages || 'N/A');
+        addMetaItem('Output size', (meta.output_size_mb || 'N/A') + ' MB');
+        addMetaItem('Render DPI', (meta.dpi || 'N/A') + ' (high quality)');
         resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 

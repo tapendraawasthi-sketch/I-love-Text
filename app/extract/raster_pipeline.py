@@ -8,6 +8,7 @@ what is visibly printed on the page.
 from __future__ import annotations
 
 import gc
+import io
 from typing import Any
 
 import fitz
@@ -20,7 +21,7 @@ from app.config import (
     is_fast_ocr_mode,
 )
 from app.extract.ocr_pipeline import ocr_image
-from app.extract.page_raster import adaptive_jpeg_quality, build_image_only_pdf_page
+from app.extract.page_raster import adaptive_jpeg_quality, build_image_only_pdf_page, _pixmap_to_jpeg
 from app.extract.render import pixmap_to_bgr
 from app.logging_config import get_logger
 
@@ -157,11 +158,8 @@ def convert_to_image_pdf(
                 colorspace=fitz.csGRAY,
             )
             
-            # Convert to JPEG
-            try:
-                jpeg = pix.tobytes("jpeg", jpg_quality=jpeg_quality)
-            except TypeError:
-                jpeg = pix.tobytes(output="jpeg", jpg_quality=jpeg_quality)
+            # Convert to JPEG (grayscale-safe encoding)
+            jpeg = _pixmap_to_jpeg(pix, jpeg_quality)
             
             # Add as page in new PDF
             build_image_only_pdf_page(clean_pdf, pix, render_dpi, jpeg)
@@ -169,8 +167,10 @@ def convert_to_image_pdf(
             del pix, jpeg
             gc.collect()
 
-        # Get PDF bytes
-        pdf_bytes = clean_pdf.tobytes()
+        # Get PDF bytes before closing
+        buffer = io.BytesIO()
+        clean_pdf.save(buffer, garbage=4, deflate=True)
+        pdf_bytes = buffer.getvalue()
         
         meta = {
             "pages": page_count,

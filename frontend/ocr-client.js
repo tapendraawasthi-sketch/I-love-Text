@@ -462,11 +462,201 @@
     return typeof Tesseract !== 'undefined';
   }
 
+  function isImagePdfAvailable() {
+    return typeof pdfjsLib !== 'undefined' && typeof window.jspdf !== 'undefined';
+  }
+
+  async function loadPdfDocument(file) {
+    if (typeof pdfjsLib === 'undefined') {
+      throw new Error('PDF.js not loaded. Check your internet connection and refresh.');
+    }
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    return pdfjsLib.getDocument({
+      data: await file.arrayBuffer(),
+      disableFontFace: true,
+      nativeImageDecoderSupport: 'none',
+    }).promise;
+  }
+
+  async function renderPdfPageCanvas(pdf, pageNum, renderScale) {
+    const page = await pdf.getPage(pageNum);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: renderScale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    return { canvas, baseViewport };
+  }
+
+  function canvasToJpegDataUrl(canvas, quality) {
+    return canvas.toDataURL('image/jpeg', quality);
+  }
+
+  function imagePdfScaleForPages(pageCount) {
+    // ~300 DPI equivalent for AI vision (pdf.js scale 1 = 72 DPI)
+    if (pageCount > 150) return 3.5;
+    if (pageCount > 50) return 4.0;
+    return 4.5;
+  }
+
+  async function convertPdfToImagePdf(file, onProgress, options = {}) {
+    const jpegQuality = options.jpegQuality ?? 0.92;
+    const pdf = await loadPdfDocument(file);
+    const totalPages = pdf.numPages;
+    const renderScale = options.renderScale ?? imagePdfScaleForPages(totalPages);
+    const { jsPDF } = window.jspdf;
+    let doc = null;
+
+    for (let pageNum = 1; pageNum <= totalPages; pageNum += 1) {
+      const { canvas, baseViewport } = await renderPdfPageCanvas(pdf, pageNum, renderScale);
+      const jpeg = canvasToJpegDataUrl(canvas, jpegQuality);
+
+      const widthPt = baseViewport.width;
+      const heightPt = baseViewport.height;
+
+      if (pageNum === 1) {
+        doc = new jsPDF({
+          unit: 'pt',
+          format: [widthPt, heightPt],
+          compress: true,
+        });
+      } else {
+        doc.addPage([widthPt, heightPt]);
+      }
+
+      doc.addImage(jpeg, 'JPEG', 0, 0, widthPt, heightPt, undefined, 'FAST');
+
+      if (onProgress) {
+        onProgress(pageNum, totalPages, `Rendering page ${pageNum}/${totalPages}…`);
+      }
+    }
+
+    const blob = doc.output('blob');
+    const dpi = Math.round(renderScale * 72);
+
+    return {
+      blob,
+      meta: {
+        pages: totalPages,
+        dpi,
+        render_scale: renderScale,
+        jpeg_quality: jpegQuality,
+        output_size_mb: Math.round((blob.size / (1024 * 1024)) * 100) / 100,
+        input_size_mb: Math.round((file.size / (1024 * 1024)) * 100) / 100,
+        processed_locally: true,
+      },
+    };
+  }
+
+  async function convertDocxToImagePdf(file, onProgress, options = {}) {
+    if (typeof docx === 'undefined' || typeof html2canvas === 'undefined') {
+      throw new Error('DOCX libraries not loaded. Check your internet connection and refresh.');
+    }
+
+    const jpegQuality = options.jpegQuality ?? 0.92;
+    const renderScale = options.renderScale ?? 2.5;
+    const container = document.createElement('div');
+    container.style.cssText =
+      'position:fixed;left:-10000px;top:0;width:794px;background:#fff;font-family:"Noto Sans Devanagari",sans-serif';
+    document.body.appendChild(container);
+
+    try {
+      await docx.renderAsync(await file.arrayBuffer(), container, null, {
+        inWrapper: true,
+        breakPages: true,
+      });
+
+      let pageElements = container.querySelectorAll('section.docx');
+      if (!pageElements.length) {
+        pageElements = container.querySelectorAll('.docx-wrapper > section');
+      }
+      if (!pageElements.length) {
+        pageElements = [container];
+      }
+
+      const { jsPDF } = window.jspdf;
+      let doc = null;
+      const totalPages = pageElements.length;
+
+      for (let index = 0; index < totalPages; index += 1) {
+        const pageEl = pageElements[index];
+        const canvas = await html2canvas(pageEl, {
+          backgroundColor: '#ffffff',
+          scale: renderScale,
+          logging: false,
+          useCORS: true,
+        });
+        const jpeg = canvasToJpegDataUrl(canvas, jpegQuality);
+
+        const widthPt = (canvas.width / renderScale) * (72 / 96);
+        const heightPt = (canvas.height / renderScale) * (72 / 96);
+
+        if (index === 0) {
+          doc = new jsPDF({
+            unit: 'pt',
+            format: [widthPt, heightPt],
+            compress: true,
+          });
+        } else {
+          doc.addPage([widthPt, heightPt]);
+        }
+
+        doc.addImage(jpeg, 'JPEG', 0, 0, widthPt, heightPt, undefined, 'FAST');
+
+        if (onProgress) {
+          onProgress(index + 1, totalPages, `Rendering page ${index + 1}/${totalPages}…`);
+        }
+      }
+
+      const blob = doc.output('blob');
+      return {
+        blob,
+        meta: {
+          pages: totalPages,
+          dpi: Math.round(renderScale * 96),
+          render_scale: renderScale,
+          jpeg_quality: jpegQuality,
+          output_size_mb: Math.round((blob.size / (1024 * 1024)) * 100) / 100,
+          input_size_mb: Math.round((file.size / (1024 * 1024)) * 100) / 100,
+          processed_locally: true,
+        },
+      };
+    } finally {
+      document.body.removeChild(container);
+    }
+  }
+
+  async function convertToImagePdf(file, onProgress, options = {}) {
+    if (!isImagePdfAvailable()) {
+      throw new Error('PDF conversion libraries not loaded. Check your internet connection and refresh.');
+    }
+
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (ext === '.pdf') {
+      return convertPdfToImagePdf(file, onProgress, options);
+    }
+    if (ext === '.docx') {
+      return convertDocxToImagePdf(file, onProgress, options);
+    }
+    throw new Error('Only PDF and DOCX files can be converted to image PDF.');
+  }
+
   global.TextExtractOCR = {
     isAvailable,
+    isImagePdfAvailable,
     getDeviceProfile: getProfile,
     extractPdf,
     extractImage,
     extractDocx,
+    convertToImagePdf,
+    convertPdfToImagePdf,
+    convertDocxToImagePdf,
   };
 })(window);

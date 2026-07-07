@@ -2,6 +2,8 @@
 Main FastAPI application.
 """
 import os
+from urllib.parse import quote
+
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,20 @@ from app.logging_config import get_logger
 logger = get_logger("TextExtract")
 
 app = FastAPI(title="TextExtract", version="2.1.0")
+
+
+def attachment_disposition(filename: str) -> str:
+    """Build a header safe for non-ASCII filenames (e.g. Nepali)."""
+    ascii_fallback = filename.encode("ascii", "ignore").decode().strip()
+    ascii_fallback = "".join(
+        c if c.isalnum() or c in "._- " else "_" for c in ascii_fallback
+    ).strip("._- ") or "document_image.pdf"
+    if not ascii_fallback.lower().endswith(".pdf"):
+        ascii_fallback += ".pdf"
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -203,7 +219,7 @@ async def convert_to_image_pdf_api(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{output_filename}"',
+            "Content-Disposition": attachment_disposition(output_filename),
             "X-Pages": str(meta["pages"]),
             "X-DPI": str(meta["dpi"]),
             "X-Output-Size-MB": str(meta["output_size_mb"]),
