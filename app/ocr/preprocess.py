@@ -1,11 +1,12 @@
 """
-Image preprocessing for maximum OCR accuracy.
-Classical OpenCV techniques only - no AI/LLM.
+Image preprocessing tuned for Nepali OCR accuracy and speed.
 """
 from __future__ import annotations
 
 import cv2
 import numpy as np
+
+from app.config import MAX_OCR_DIMENSION, MIN_OCR_DIMENSION
 
 
 def load_image_bytes(data: bytes) -> np.ndarray:
@@ -33,30 +34,54 @@ def _to_grayscale(img: np.ndarray) -> np.ndarray:
     return img
 
 
-def _upscale_if_needed(img: np.ndarray, target_min: int = 2400) -> np.ndarray:
-    """Upscale small images so Tesseract has enough pixels to work with."""
+def _normalize_resolution(img: np.ndarray, *, digital: bool) -> np.ndarray:
+    """Upscale small images for accuracy and downscale huge pages for speed."""
     h, w = img.shape[:2]
     max_dim = max(h, w)
-    if max_dim < 1200:
-        scale = min(target_min / max_dim, 4.0)
+    target_min = MIN_OCR_DIMENSION if digital else MIN_OCR_DIMENSION - 200
+    target_max = MAX_OCR_DIMENSION
+
+    if max_dim > target_max:
+        scale = target_max / max_dim
+        new_w, new_h = int(w * scale), int(h * scale)
+        return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    if max_dim < target_min:
+        scale = min(target_min / max_dim, 3.0)
         new_w, new_h = int(w * scale), int(h * scale)
         return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
     return img
 
 
-def _denoise(img: np.ndarray, strength: float = 5.0) -> np.ndarray:
+def _denoise_fast(img: np.ndarray) -> np.ndarray:
+    return cv2.bilateralFilter(img, d=7, sigmaColor=55, sigmaSpace=55)
+
+
+def _denoise_strong(img: np.ndarray) -> np.ndarray:
     return cv2.fastNlMeansDenoising(
-        img, None, h=strength, templateWindowSize=7, searchWindowSize=21
+        img, None, h=12.0, templateWindowSize=7, searchWindowSize=21
     )
 
 
-def _apply_clahe(img: np.ndarray) -> np.ndarray:
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+def _apply_clahe(img: np.ndarray, clip_limit: float = 2.0) -> np.ndarray:
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
     return clahe.apply(img)
 
 
+def _sharpen(img: np.ndarray) -> np.ndarray:
+    blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=1.0)
+    return cv2.addWeighted(img, 1.6, blurred, -0.6, 0)
+
+
+def _emphasize_shirorekha(img: np.ndarray) -> np.ndarray:
+    """Boost horizontal strokes used by Devanagari top lines."""
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
+    horizontal = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return cv2.addWeighted(img, 0.82, horizontal, 0.18, 0)
+
+
 def _binarize(img: np.ndarray) -> np.ndarray:
-    """Adaptive binarization - picks best method based on image content."""
     _, th_otsu = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     th_adapt = cv2.adaptiveThreshold(
         img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5
@@ -66,7 +91,6 @@ def _binarize(img: np.ndarray) -> np.ndarray:
 
 
 def _deskew(img: np.ndarray) -> np.ndarray:
-    """Correct slight rotation in scanned documents."""
     inverted = cv2.bitwise_not(img)
     coords = np.column_stack(np.where(inverted > 0))
     if len(coords) < 50:
@@ -95,16 +119,22 @@ def _deskew(img: np.ndarray) -> np.ndarray:
 
 
 def _morphological_clean(img: np.ndarray) -> np.ndarray:
-    """Remove small noise dots via morphological opening."""
     kernel = np.ones((2, 2), np.uint8)
     inverted = cv2.bitwise_not(img)
     opened = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, kernel)
     return cv2.bitwise_not(opened)
 
 
-def _sharpen(img: np.ndarray) -> np.ndarray:
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-    return cv2.filter2D(img, -1, kernel)
+def _digital_enhance(img: np.ndarray) -> np.ndarray:
+    """Enhance rendered PDF/DOCX pages while preserving Devanagari marks."""
+    img = _apply_clahe(img, clip_limit=2.6)
+    img = _sharpen(img)
+    img = _emphasize_shirorekha(img)
+
+    if float(np.std(img)) < 42.0:
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    return img
 
 
 def preprocess_for_ocr(
@@ -114,22 +144,18 @@ def preprocess_for_ocr(
     digital: bool = False,
 ) -> np.ndarray:
     """
-    Full preprocessing pipeline for Tesseract OCR.
+    Preprocessing pipeline optimized for Nepali OCR.
 
-    Args:
-        image_bgr: Input BGR image
-        aggressive: Stronger denoising and morphological cleaning for scans
-        digital: Lighter pipeline for rendered PDF/DOCX pages
+    Digital pages use a fast grayscale enhancement path.
+    Scans use denoise + binarize, with stronger cleanup only on retry.
     """
     img = _to_grayscale(image_bgr)
-    img = _upscale_if_needed(img, target_min=2800 if digital else 2400)
+    img = _normalize_resolution(img, digital=digital)
 
     if digital:
-        img = _apply_clahe(img)
-        img = _sharpen(img)
-        return img
+        return _digital_enhance(img)
 
-    img = _denoise(img, strength=15.0 if aggressive else 5.0)
+    img = _denoise_strong(img) if aggressive else _denoise_fast(img)
     img = _apply_clahe(img)
     img = _binarize(img)
     img = _deskew(img)

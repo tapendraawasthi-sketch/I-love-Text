@@ -3,21 +3,29 @@ Tesseract OCR engine wrapper with layout-aware Nepali extraction.
 """
 from __future__ import annotations
 
+import re
+
 import pytesseract
 import numpy as np
 
 from app.config import (
     COLUMN_GAP_RATIO,
     DEFAULT_OCR_CONFIG,
-    OCR_PSM_CANDIDATES,
+    OCR_GOOD_CONFIDENCE,
+    OCR_MIN_WORDS,
+    OCR_PSM_PRIMARY,
+    OCR_PSM_RETRY,
     configure_tesseract,
 )
 from app.logging_config import get_logger
 from app.ocr.layout import reconstruct_layout_from_data
+from app.ocr.nepali_postprocess import normalize_nepali_text
 
 logger = get_logger("OCREngine")
 
 configure_tesseract()
+
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
 
 def available_languages() -> list[str]:
@@ -28,18 +36,75 @@ def available_languages() -> list[str]:
         return []
 
 
+def resolve_ocr_lang(lang: str) -> str:
+    """
+    Resolve OCR language quickly for Nepali-first workloads.
+
+    Auto mode prefers nep+eng directly instead of sweeping every language pack.
+    """
+    langs_available = set(available_languages())
+
+    if lang == "auto":
+        if "nep" in langs_available and "eng" in langs_available:
+            return "nep+eng"
+        if "nep" in langs_available:
+            return "nep"
+        if "eng" in langs_available:
+            return "eng"
+        return "eng"
+
+    if lang == "nep" and "nep" in langs_available and "eng" in langs_available:
+        return "nep+eng"
+
+    return lang
+
+
 def _build_config(psm: int) -> str:
     return (
         f"--oem 1 --psm {psm} "
         "-c preserve_interword_spaces=1 "
-        "-c textord_tabfind_find_tables=1"
+        "-c textord_tabfind_find_tables=1 "
+        "-c textord_heavy_nr=1"
     )
 
 
-def _score_result(text: str, mean_confidence: float, word_count: int) -> float:
+def _devanagari_ratio(text: str) -> float:
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return 0.0
+    devanagari = sum(1 for char in letters if _DEVANAGARI_RE.match(char))
+    return devanagari / len(letters)
+
+
+def score_ocr_result(text: str, mean_confidence: float, word_count: int) -> float:
     if not text.strip():
         return -1.0
-    return mean_confidence * min(word_count, 80) / 80.0
+
+    score = mean_confidence * min(word_count, 80) / 80.0
+    ratio = _devanagari_ratio(text)
+    if ratio >= 0.25:
+        score *= 1.0 + min(ratio, 0.8) * 0.25
+    return score
+
+
+def score_result_dict(result: dict) -> float:
+    return score_ocr_result(
+        result["text"],
+        result["mean_confidence"],
+        result["word_count"],
+    )
+
+
+def _score_result(result: dict) -> float:
+    return score_result_dict(result)
+
+
+def _good_enough(result: dict) -> bool:
+    return (
+        result["mean_confidence"] >= OCR_GOOD_CONFIDENCE
+        and result["word_count"] >= OCR_MIN_WORDS
+        and bool(result["text"].strip())
+    )
 
 
 def _mean_confidence(data: dict) -> tuple[float, int]:
@@ -54,9 +119,7 @@ def _mean_confidence(data: dict) -> tuple[float, int]:
 
 
 def run_ocr(image: np.ndarray, lang: str, config: str | None = None) -> dict:
-    """
-    Run Tesseract on an image and return layout-aware structured results.
-    """
+    """Run Tesseract on an image and return layout-aware structured results."""
     if config is None:
         config = DEFAULT_OCR_CONFIG
 
@@ -76,91 +139,54 @@ def run_ocr(image: np.ndarray, lang: str, config: str | None = None) -> dict:
     layout_text = reconstruct_layout_from_data(
         data,
         column_gap_ratio=COLUMN_GAP_RATIO,
+        min_confidence=40.0,
     )
     mean_conf, word_count = _mean_confidence(data)
 
-    if not layout_text and "--psm 3" in config:
-        fallback_config = config.replace("--psm 3", "--psm 6")
-        return run_ocr(image, lang=lang, config=fallback_config)
-
     return {
-        "text": layout_text,
+        "text": normalize_nepali_text(layout_text),
         "mean_confidence": round(mean_conf, 2),
         "word_count": word_count,
         "lang_used": lang,
     }
 
 
-def run_ocr_best_psm(image: np.ndarray, lang: str) -> dict:
-    """Try multiple page-segmentation modes and keep the strongest result."""
-    best_result: dict | None = None
-    best_score = -1.0
+def run_ocr_smart(image: np.ndarray, lang: str) -> dict:
+    """
+    Fast OCR with selective retries.
 
-    for psm in OCR_PSM_CANDIDATES:
+    Runs one primary pass first, then only retries alternate PSM modes when
+    confidence or word count is weak.
+    """
+    resolved_lang = resolve_ocr_lang(lang)
+    result = run_ocr(
+        image,
+        resolved_lang,
+        config=_build_config(OCR_PSM_PRIMARY),
+    )
+
+    if _good_enough(result):
+        return result
+
+    best = result
+    best_score = _score_result(result)
+
+    for psm in OCR_PSM_RETRY:
         try:
-            result = run_ocr(image, lang=lang, config=_build_config(psm))
+            candidate = run_ocr(
+                image,
+                resolved_lang,
+                config=_build_config(psm),
+            )
         except Exception:
             continue
 
-        score = _score_result(
-            result["text"],
-            result["mean_confidence"],
-            result["word_count"],
-        )
+        score = _score_result(candidate)
         if score > best_score:
+            best = candidate
             best_score = score
-            best_result = result
 
-    if best_result is None:
-        return {
-            "text": "",
-            "mean_confidence": 0.0,
-            "word_count": 0,
-            "lang_used": lang,
-        }
+        if _good_enough(best):
+            break
 
-    return best_result
-
-
-def ocr_with_best_lang(image: np.ndarray) -> dict:
-    """Try multiple language combinations and return the best result."""
-    langs_available = available_languages()
-
-    candidates: list[str] = []
-    if "nep" in langs_available:
-        candidates.append("nep")
-    if "eng" in langs_available:
-        candidates.append("eng")
-    if "nep" in langs_available and "eng" in langs_available:
-        candidates.append("nep+eng")
-
-    if not candidates:
-        candidates = ["eng"]
-
-    best_result: dict | None = None
-    best_score = -1.0
-
-    for lang in candidates:
-        try:
-            result = run_ocr_best_psm(image, lang=lang)
-        except Exception:
-            continue
-
-        score = _score_result(
-            result["text"],
-            result["mean_confidence"],
-            result["word_count"],
-        )
-        if score > best_score:
-            best_score = score
-            best_result = result
-
-    if best_result is None:
-        return {
-            "text": "",
-            "mean_confidence": 0.0,
-            "word_count": 0,
-            "lang_used": "none",
-        }
-
-    return best_result
+    return best

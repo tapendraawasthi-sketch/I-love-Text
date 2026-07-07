@@ -1,8 +1,5 @@
 """
 Spatial layout reconstruction from Tesseract word bounding boxes.
-
-Rebuilds rows and columns so tables and multi-column documents keep
-their structure using tab-separated columns and newline-separated rows.
 """
 from __future__ import annotations
 
@@ -10,6 +7,7 @@ import re
 from typing import Any
 
 _NOISE_RE = re.compile(r"^[_|\[\]\\\/=\-]+$")
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
 
 def _word_bbox(data: dict[str, Any], index: int) -> dict[str, float | str]:
@@ -27,17 +25,36 @@ def _word_bbox(data: dict[str, Any], index: int) -> dict[str, float | str]:
     }
 
 
+def _contains_devanagari(text: str) -> bool:
+    return bool(_DEVANAGARI_RE.search(text))
+
+
+def _effective_min_confidence(text: str, min_confidence: float) -> float:
+    """
+    Nepali OCR often reports lower confidence for valid Devanagari tokens.
+    """
+    if _contains_devanagari(text):
+        return max(28.0, min_confidence - 15.0)
+    return min_confidence
+
+
 def _is_noise_word(word: dict[str, float | str], min_confidence: float) -> bool:
     text = str(word["text"])
     conf = float(word["conf"])
+    threshold = _effective_min_confidence(text, min_confidence)
 
     if not text:
         return True
     if _NOISE_RE.match(text):
         return True
-    if conf < min_confidence and len(text) < 3:
+    if conf < threshold and len(text) < 3:
         return True
-    if conf < 60 and re.fullmatch(r"[a-zA-Z&@#]+", text) and len(text) < 4:
+    if (
+        not _contains_devanagari(text)
+        and conf < 60
+        and re.fullmatch(r"[a-zA-Z&@#]+", text)
+        and len(text) < 4
+    ):
         return True
     return False
 

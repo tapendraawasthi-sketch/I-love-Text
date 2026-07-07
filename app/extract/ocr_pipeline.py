@@ -5,24 +5,34 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.ocr.engine import ocr_with_best_lang, run_ocr_best_psm
+from app.config import OCR_RETRY_CONFIDENCE
+from app.ocr.engine import run_ocr_smart, score_result_dict
 from app.ocr.preprocess import preprocess_for_ocr
+
+
+def should_retry_page(result: dict) -> bool:
+    return (
+        not result["text"].strip()
+        or result["word_count"] < 2
+        or result["mean_confidence"] < OCR_RETRY_CONFIDENCE
+    )
 
 
 def ocr_image(image_bgr: np.ndarray, lang: str, *, digital: bool) -> dict:
     clean_img = preprocess_for_ocr(image_bgr, aggressive=False, digital=digital)
-    if lang == "auto":
-        result = ocr_with_best_lang(clean_img)
-    else:
-        result = run_ocr_best_psm(clean_img, lang)
+    result = run_ocr_smart(clean_img, lang)
 
-    if 0 < result["mean_confidence"] < 55:
-        retry_img = preprocess_for_ocr(image_bgr, aggressive=True, digital=False)
-        if lang == "auto":
-            retry = ocr_with_best_lang(retry_img)
-        else:
-            retry = run_ocr_best_psm(retry_img, lang)
-        if retry["mean_confidence"] > result["mean_confidence"]:
-            result = retry
+    if not should_retry_page(result):
+        return result
+
+    retry_img = preprocess_for_ocr(
+        image_bgr,
+        aggressive=not digital,
+        digital=False,
+    )
+    retry = run_ocr_smart(retry_img, lang)
+
+    if score_result_dict(retry) > score_result_dict(result):
+        return retry
 
     return result
