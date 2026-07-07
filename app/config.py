@@ -34,9 +34,10 @@ PDF_RETRY_CONFIDENCE: float = float(os.getenv("PDF_RETRY_CONFIDENCE", "62"))
 HIGH_DPI_RETRY_MAX_PAGES: int = int(os.getenv("HIGH_DPI_RETRY_MAX_PAGES", "15"))
 
 # Sanitization: PDF → JPEG images → image-only PDF → OCR (removes font bias, smaller).
-SANITIZE_DPI: int = int(os.getenv("SANITIZE_DPI", "220" if _IS_RENDER else "240"))
-SANITIZE_DPI_MEDIUM: int = int(os.getenv("SANITIZE_DPI_MEDIUM", "210" if _IS_RENDER else "225"))
-SANITIZE_DPI_LARGE: int = int(os.getenv("SANITIZE_DPI_LARGE", "200" if _IS_RENDER else "215"))
+# Higher DPI for Nepali text accuracy (Devanagari characters need more detail).
+SANITIZE_DPI: int = int(os.getenv("SANITIZE_DPI", "260" if _IS_RENDER else "300"))
+SANITIZE_DPI_MEDIUM: int = int(os.getenv("SANITIZE_DPI_MEDIUM", "240" if _IS_RENDER else "280"))
+SANITIZE_DPI_LARGE: int = int(os.getenv("SANITIZE_DPI_LARGE", "220" if _IS_RENDER else "260"))
 SANITIZE_JPEG_QUALITY: int = int(os.getenv("SANITIZE_JPEG_QUALITY", "88"))
 SANITIZE_JPEG_MIN_QUALITY: int = int(os.getenv("SANITIZE_JPEG_MIN_QUALITY", "82"))
 SANITIZE_MAX_JPEG_BYTES: int = int(os.getenv("SANITIZE_MAX_JPEG_BYTES", "900000"))

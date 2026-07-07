@@ -2,9 +2,10 @@
 Per-page precision extraction for maximum accuracy.
 
 Strategy per page:
-  1. Unicode text layer  → exact digital text (100%)
-  2. Legacy font layer   → npttf2utf conversion (exact for Preeti/Kantipur digital PDFs)
-  3. Scanned / no text   → compressed grayscale image → OCR
+  1. Unicode text layer (Mangal, Noto, etc.) → exact digital text (100%)
+  2. Legacy font layer (Preeti, Kantipur) → use OCR for accuracy
+     (Legacy font conversion is unreliable; OCR reads rendered glyphs correctly)
+  3. Scanned / no text → compressed grayscale image → OCR
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ from app.config import SANITIZE_MAX_JPEG_BYTES
 from app.extract.ocr_pipeline import ocr_image
 from app.extract.page_raster import rasterize_page_for_ocr
 from app.extract.raster_pipeline import sanitize_dpi_for_page_count
-from app.legacy_fonts.converter import convert_legacy_text
 from app.legacy_fonts.mappings import is_legacy_font
 from app.logging_config import get_logger
 from app.ocr.engine import resolve_ocr_lang
@@ -27,9 +27,10 @@ logger = get_logger("PrecisionPipeline")
 
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _LEGACY_FONT_RE = re.compile(
-    r"preeti|kantipur|sagarmatha|himali|pcs|aakriti|fontasy|ganesh|navjeevan|kanchan",
+    r"preeti|kantipur|sagarmatha|himali|pcs|aakriti|fontasy|ganesh|navjeevan|kanchan|himalb|annapurna|sabdatara",
     re.I,
 )
+_GARBAGE_RE = re.compile(r"undefined|NaN|\[object|function\s*\(", re.I)
 
 
 def _devanagari_ratio(text: str) -> float:
@@ -40,10 +41,16 @@ def _devanagari_ratio(text: str) -> float:
 
 
 def _extract_digital_page(page: fitz.Page) -> dict[str, Any] | None:
-    """Extract text from PDF text layer with spatial layout."""
+    """
+    Extract text from PDF text layer - only for true Unicode fonts.
+    
+    Legacy fonts (Preeti, Kantipur) encode Nepali as ASCII - their text layer
+    is not human-readable. For maximum accuracy, we skip these and use OCR
+    which reads the rendered glyphs correctly.
+    """
     page_dict = page.get_text("dict")
     detected_fonts: set[str] = set()
-    had_legacy = False
+    has_legacy_font = False
     blocks_out: list[str] = []
 
     for block in page_dict.get("blocks", []):
@@ -59,9 +66,11 @@ def _extract_digital_page(page: fitz.Page) -> dict[str, Any] | None:
                 if not raw.strip():
                     continue
                 detected_fonts.add(font_name)
-                if is_legacy_font(font_name):
-                    had_legacy = True
-                    raw = convert_legacy_text(raw, font_name)
+                
+                # Check for legacy fonts - if found, skip digital extraction
+                if is_legacy_font(font_name) or _LEGACY_FONT_RE.search(font_name):
+                    has_legacy_font = True
+                    
                 bbox = span.get("bbox", (0, 0, 0, 0))
                 spans_text.append((raw, bbox[0], bbox[2], bbox[3] - bbox[1]))
 
@@ -88,36 +97,48 @@ def _extract_digital_page(page: fitz.Page) -> dict[str, Any] | None:
         if block_lines:
             blocks_out.append("\n".join(block_lines))
 
+    # If legacy font detected, use OCR for maximum accuracy
+    if has_legacy_font:
+        logger.info("Legacy font detected (%s), using OCR for accuracy", 
+                   [f for f in detected_fonts if is_legacy_font(f) or _LEGACY_FONT_RE.search(f)])
+        return None
+
     text = "\n\n".join(blocks_out).strip()
     if len(text.strip()) < 3:
+        return None
+    
+    # Check for garbage patterns (broken encoding)
+    if _GARBAGE_RE.search(text):
+        logger.info("Garbage patterns detected in text, using OCR")
         return None
 
     ratio = _devanagari_ratio(text)
     char_count = len(text.strip())
 
-    if had_legacy and ratio >= 0.15:
-        return {
-            "text": text,
-            "method": "digital_legacy",
-            "confidence": 100.0,
-            "char_count": char_count,
-        }
-
-    if ratio >= 0.12 or (char_count > 40 and re.search(r"[a-zA-Z]{3,}", text)):
+    # Good Unicode Nepali: high Devanagari ratio
+    if ratio >= 0.25:
         return {
             "text": text,
             "method": "digital_unicode",
             "confidence": 100.0,
             "char_count": char_count,
+            "devanagari_ratio": round(ratio * 100, 1),
         }
 
-    if had_legacy:
+    # Mixed content or pure English
+    if ratio >= 0.08 or (char_count > 50 and re.search(r"[a-zA-Z]{3,}", text)):
         return {
             "text": text,
-            "method": "digital_legacy",
+            "method": "digital_mixed",
             "confidence": 100.0,
             "char_count": char_count,
+            "devanagari_ratio": round(ratio * 100, 1),
         }
+
+    # Low Devanagari ratio with no clear English - likely legacy encoded, use OCR
+    if ratio < 0.05 and not re.search(r"[a-zA-Z]{5,}", text):
+        logger.info("Low Devanagari ratio (%.1f%%), likely legacy encoded, using OCR", ratio * 100)
+        return None
 
     return None
 
@@ -134,9 +155,12 @@ def extract_page_precision(
     if digital and digital["char_count"] >= 8:
         return digital
 
+    # Use higher DPI for Nepali OCR accuracy (Devanagari needs more detail)
+    ocr_dpi = max(render_dpi, 280)
+    
     image_bgr, raster_meta = rasterize_page_for_ocr(
         page,
-        render_dpi,
+        ocr_dpi,
         max_jpeg_bytes=max_jpeg_bytes,
     )
     resolved = resolve_ocr_lang(lang)

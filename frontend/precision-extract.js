@@ -1,12 +1,17 @@
 /**
  * Precision text extraction — digital text layer first, OCR only when needed.
- * Unicode PDFs: exact text. Preeti/Kantipur: font conversion. Scans: image OCR.
+ * 
+ * For maximum Nepali accuracy:
+ * - True Unicode PDFs (Mangal, Noto Sans Devanagari): extract digital text directly
+ * - Legacy fonts (Preeti, Kantipur): fall back to OCR (reads rendered glyphs accurately)
+ * - Scanned pages: OCR
  */
 (function (global) {
   'use strict';
 
-  const LEGACY_FONT_RE = /preeti|kantipur|sagarmatha|himali|pcs|aakriti|fontasy|ganesh|navjeevan|kanchan|siddhi|vishwash|ekantipur/i;
+  const LEGACY_FONT_RE = /preeti|kantipur|sagarmatha|himali|pcs|aakriti|fontasy|ganesh|navjeevan|kanchan|siddhi|vishwash|ekantipur|himalb|annapurna|sabdatara|kunda|kanchi|padma|samman/i;
   const DEVANAGARI_RE = /[\u0900-\u097F]/;
+  const GARBAGE_PATTERNS = /undefined|NaN|\[object|function\s*\(|\.{5,}|_{5,}/i;
 
   function devanagariRatio(text) {
     const letters = [...text].filter((c) => /\S/.test(c));
@@ -18,11 +23,17 @@
     return LEGACY_FONT_RE.test(name || '');
   }
 
+  function hasGarbagePatterns(text) {
+    return GARBAGE_PATTERNS.test(text);
+  }
+
   function extractLinesFromTextContent(textContent) {
     const items = (textContent.items || []).filter((it) => it.str && it.str.trim());
-    if (!items.length) return { lines: [], fonts: new Set() };
+    if (!items.length) return { lines: [], fonts: new Set(), hasLegacyFont: false };
 
     const fonts = new Set();
+    let hasLegacyFont = false;
+
     const sorted = [...items].sort((a, b) => {
       const dy = b.transform[5] - a.transform[5];
       if (Math.abs(dy) > 2) return dy;
@@ -34,7 +45,11 @@
     let lastY = null;
 
     for (const item of sorted) {
-      fonts.add(item.fontName || '');
+      const fontName = item.fontName || '';
+      fonts.add(fontName);
+      if (isLegacyFontName(fontName)) {
+        hasLegacyFont = true;
+      }
       const y = Math.round(item.transform[5]);
       if (lastY === null || Math.abs(y - lastY) > 4) {
         if (current.length) rows.push(current);
@@ -63,68 +78,133 @@
       return line.trim();
     }).filter(Boolean);
 
-    return { lines, fonts };
-  }
-
-  function convertLegacyText(text, fonts) {
-    const fontList = [...fonts];
-    const legacyFont = fontList.find(isLegacyFontName);
-    if (legacyFont && global.preetiToUnicode) {
-      return global.preetiToUnicode(text);
-    }
-    if (global.isLikelyPreeti && global.isLikelyPreeti(text) && global.preetiToUnicode) {
-      return global.preetiToUnicode(text);
-    }
-    return text;
+    return { lines, fonts, hasLegacyFont };
   }
 
   /**
-   * Try to extract exact digital text from a PDF page (what you see if fonts render correctly).
+   * Check if raw text looks like Preeti-encoded (ASCII that represents Nepali).
+   * Preeti text looks like random English letters: "g]kfn", ";/sf/", etc.
+   */
+  function looksLikeLegacyEncoded(text) {
+    if (!text || text.length < 20) return false;
+    
+    // Common Preeti character sequences
+    const preetiPatterns = [
+      /[;:]/,           // Common in Preeti
+      /[cfofdfg]/i,     // Common Preeti letter combos  
+      /\|/,             // Pipe used in Preeti
+      /[{}]/,           // Braces in some legacy fonts
+    ];
+    
+    const devaRatio = devanagariRatio(text);
+    const hasAsciiMix = /[a-zA-Z]/.test(text) && /[;:\|{}\[\]]/.test(text);
+    
+    // If very low Devanagari but lots of ASCII with special chars, likely legacy
+    if (devaRatio < 0.1 && hasAsciiMix) {
+      return true;
+    }
+    
+    // Check for common Preeti indicators
+    const indicators = ['cf', 'sf', 'of', 'df', 'jf', 'tf', 'xf', 'k|', 'sfo{', ';/sf/', 'g]kfn'];
+    let score = 0;
+    for (const ind of indicators) {
+      if (text.includes(ind)) score++;
+    }
+    return score >= 2;
+  }
+
+  /**
+   * Extract digital text from a PDF page.
+   * Returns success:true only for clean Unicode text.
+   * Legacy fonts and poor quality → success:false → triggers OCR fallback.
    */
   function extractDigitalPage(textContent) {
-    const { lines, fonts } = extractLinesFromTextContent(textContent);
+    const { lines, fonts, hasLegacyFont } = extractLinesFromTextContent(textContent);
     const rawText = lines.join('\n').trim();
+    
     if (!rawText || rawText.length < 3) {
       return { success: false, reason: 'empty' };
     }
 
-    const hasLegacy = [...fonts].some(isLegacyFontName)
-      || (global.isLikelyPreeti && global.isLikelyPreeti(rawText));
-
-    if (hasLegacy) {
-      const converted = convertLegacyText(rawText, fonts);
-      const ratio = devanagariRatio(converted);
-      if (ratio >= 0.2 || converted !== rawText) {
-        return {
-          success: true,
-          text: converted,
-          method: 'digital_legacy',
-          confidence: 100,
-          charCount: converted.length,
-        };
-      }
+    // Check for garbage patterns (broken conversion)
+    if (hasGarbagePatterns(rawText)) {
+      return { success: false, reason: 'garbage_detected', rawText };
     }
 
-    const ratio = devanagariRatio(rawText);
-    const hasUnicode = ratio >= 0.15;
-    const hasLatin = /[a-zA-Z]{3,}/.test(rawText);
+    // If legacy font detected, use OCR for maximum accuracy
+    // Legacy font text layers contain encoded ASCII, not readable text
+    if (hasLegacyFont) {
+      return { 
+        success: false, 
+        reason: 'legacy_font_use_ocr',
+        rawText,
+        detectedFonts: [...fonts].filter(isLegacyFontName),
+      };
+    }
 
-    if (hasUnicode || (hasLatin && rawText.length > 30)) {
+    // Check if text looks like legacy-encoded even without font detection
+    if (looksLikeLegacyEncoded(rawText)) {
+      return { 
+        success: false, 
+        reason: 'likely_legacy_encoded',
+        rawText,
+      };
+    }
+
+    // Calculate Devanagari ratio for Unicode check
+    const devaRatio = devanagariRatio(rawText);
+    const hasLatin = /[a-zA-Z]{3,}/.test(rawText);
+    const charCount = rawText.length;
+
+    // Good Unicode Nepali text: high Devanagari ratio
+    if (devaRatio >= 0.3) {
       return {
         success: true,
         text: rawText,
         method: 'digital_unicode',
         confidence: 100,
-        charCount: rawText.length,
+        charCount,
+        devanagariRatio: Math.round(devaRatio * 100),
       };
     }
 
-    return { success: false, reason: 'not_digital', rawText };
+    // Mixed content (English + some Nepali) - accept if reasonable Devanagari
+    if (devaRatio >= 0.1 && charCount > 50) {
+      return {
+        success: true,
+        text: rawText,
+        method: 'digital_mixed',
+        confidence: 100,
+        charCount,
+        devanagariRatio: Math.round(devaRatio * 100),
+      };
+    }
+
+    // Pure English text - accept
+    if (hasLatin && devaRatio < 0.05 && charCount > 30) {
+      return {
+        success: true,
+        text: rawText,
+        method: 'digital_latin',
+        confidence: 100,
+        charCount,
+      };
+    }
+
+    // Unclear - use OCR for safety
+    return { 
+      success: false, 
+      reason: 'uncertain_encoding',
+      rawText,
+      devanagariRatio: Math.round(devaRatio * 100),
+    };
   }
 
   global.PrecisionExtract = {
     extractDigitalPage,
     devanagariRatio,
     extractLinesFromTextContent,
+    isLegacyFontName,
+    looksLikeLegacyEncoded,
   };
 })(window);
