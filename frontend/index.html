@@ -16,7 +16,7 @@
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p><strong>Runs in your browser</strong> — auto-detects your CPU &amp; RAM and only enables fast high-quality mode if your device supports it (e.g. 8+ cores &amp; 8+ GB RAM like Acer Swift Go 14).</p>
+            <p><strong>Precision extraction</strong> — reads the exact digital text layer when available (Unicode &amp; Preeti/Kantipur fonts). OCR is used only for scanned pages. Runs in your browser.</p>
             <p id="device-badge" class="device-badge">Detecting your device…</p>
         </header>
 
@@ -33,7 +33,7 @@
                 <div class="upload-content">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
-                    <p class="upload-hint">PDF, DOCX, images — processed locally in your browser (Max 50MB, no page limit)</p>
+                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · exact text from digital PDFs; compressed OCR for scans</p>
                 </div>
                 <div id="file-info" class="file-info hidden">
                     <span id="file-name"></span>
@@ -90,6 +90,9 @@
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="preeti.js"></script>
+    <script src="precision-extract.js"></script>
+    <script src="image-compress.js"></script>
     <script src="ocr-client.js"></script>
     <script src="app.js"></script>
 </body>

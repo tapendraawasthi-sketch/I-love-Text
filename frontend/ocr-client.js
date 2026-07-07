@@ -147,6 +147,15 @@
       .trim() || (result.data.text || '').trim();
   }
 
+  function canvasToOcrImage(srcCanvas, profile) {
+    if (global.ImageCompress) {
+      const prepared = global.ImageCompress.prepareCanvasForOcr(srcCanvas, profile);
+      const compressed = global.ImageCompress.compressCanvasForOcr(prepared, profile);
+      return compressed.dataUrl;
+    }
+    return preprocessCanvas(srcCanvas, profile);
+  }
+
   function preprocessCanvas(srcCanvas, profile) {
     const w = srcCanvas.width;
     const h = srcCanvas.height;
@@ -223,7 +232,7 @@
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
-    return preprocessCanvas(canvas, profile);
+    return canvasToOcrImage(canvas, profile);
   }
 
   async function ocrDataUrl(worker, dataUrl) {
@@ -256,14 +265,32 @@
       }
     }
 
-    return { text: ocr.text, confidence: ocr.confidence };
+    return { text: ocr.text, confidence: ocr.confidence, method: 'image_ocr' };
+  }
+
+  async function extractPagePrecision(pdf, pageNum, scale, worker, profile) {
+    const page = await pdf.getPage(pageNum);
+
+    if (global.PrecisionExtract) {
+      const textContent = await page.getTextContent();
+      const digital = global.PrecisionExtract.extractDigitalPage(textContent);
+      if (digital.success) {
+        return {
+          text: digital.text,
+          confidence: 100,
+          method: digital.method,
+        };
+      }
+    }
+
+    return ocrPageWithRetry(pdf, pageNum, scale, worker, profile);
   }
 
   async function extractPdf(file, lang, onProgress) {
     if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js not loaded.');
     if (typeof Tesseract === 'undefined') throw new Error('Tesseract.js not loaded.');
 
-    const profile = getProfile();
+    const sizeMb = file.size / (1024 * 1024);
 
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -275,6 +302,10 @@
     }).promise;
 
     const totalPages = pdf.numPages;
+    let profile = getProfile();
+    if (global.ImageCompress) {
+      profile = global.ImageCompress.profileForLargeFile(profile, sizeMb, totalPages);
+    }
     const scale = scaleForPages(totalPages, profile);
     const numWorkers = workerCount(totalPages, profile);
     const workers = await createWorkers(lang, numWorkers, profile);
@@ -288,7 +319,7 @@
         const pageNum = pageQueue.shift();
         if (!pageNum) break;
 
-        results[pageNum - 1] = await ocrPageWithRetry(
+        results[pageNum - 1] = await extractPagePrecision(
           pdf,
           pageNum,
           scale,
@@ -296,11 +327,13 @@
           profile,
         );
         done += 1;
+        const method = results[pageNum - 1].method || 'image_ocr';
+        const methodLabel = method.startsWith('digital') ? 'exact text' : 'OCR';
         if (onProgress) {
           onProgress(
             done,
             totalPages,
-            `Page ${done}/${totalPages} · ${profile.tier} mode · ${numWorkers} workers`,
+            `Page ${done}/${totalPages} · ${methodLabel} · ${profile.tier} mode`,
           );
         }
       }
@@ -314,6 +347,8 @@
 
     const texts = results.map((r) => r.text);
     const confidences = results.map((r) => r.confidence);
+    const methods = results.map((r) => r.method || 'image_ocr');
+    const digitalPages = methods.filter((m) => m.startsWith('digital')).length;
     const finalText =
       totalPages === 1 ? texts[0] : texts.join('\n\n--- Page Break ---\n\n');
 
@@ -321,9 +356,13 @@
       text: finalText,
       meta: {
         pages: totalPages,
-        method: 'browser_parallel_ocr',
-        pipeline: 'pdf_to_image_to_ocr_browser',
-        method_per_page: Array(totalPages).fill('browser_ocr'),
+        method: 'precision_hybrid',
+        pipeline: 'digital_text_then_ocr_fallback',
+        method_per_page: methods,
+        digital_pages: digitalPages,
+        ocr_pages: totalPages - digitalPages,
+        file_size_mb: Math.round(sizeMb * 100) / 100,
+        compressed_ocr: digitalPages < totalPages,
         mean_confidence: confidences.length
           ? Math.round((confidences.reduce((a, b) => a + b, 0) / confidences.length) * 10) / 10
           : 0,
@@ -351,7 +390,7 @@
       canvas.width = bitmap.width;
       canvas.height = bitmap.height;
       canvas.getContext('2d').drawImage(bitmap, 0, 0);
-      const dataUrl = preprocessCanvas(canvas, profile);
+      const dataUrl = canvasToOcrImage(canvas, profile);
       const ocr = await ocrDataUrl(workers[0], dataUrl);
       if (onProgress) onProgress(1, 1, 'Done');
       return {
@@ -392,7 +431,7 @@
         scale: profile.docxScale,
         logging: false,
       });
-      const dataUrl = preprocessCanvas(canvas, profile);
+      const dataUrl = canvasToOcrImage(canvas, profile);
       const workers = await createWorkers(lang, 1, profile);
       try {
         const ocr = await ocrDataUrl(workers[0], dataUrl);

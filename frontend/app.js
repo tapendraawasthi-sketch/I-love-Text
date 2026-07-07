@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const progressLabel = document.getElementById('progress-label');
 
     let currentFile = null;
-    const MAX_MB = 50;
+    const MAX_MB = 100;
 
     function showDeviceProfile() {
         const badge = document.getElementById('device-badge');
@@ -169,12 +169,20 @@ document.addEventListener('DOMContentLoaded', () => {
             if (m.processed_locally) {
                 addMetaItem('Processing', 'In your browser (free, no server upload)');
             }
+            if (m.digital_pages != null) {
+                addMetaItem('Exact text pages', `${m.digital_pages} of ${m.pages}`);
+            }
+            if (m.ocr_pages != null && m.ocr_pages > 0) {
+                addMetaItem('OCR pages', m.ocr_pages);
+            }
             if (m.device_profile) addMetaItem('Device mode', m.device_profile);
             if (m.workers) addMetaItem('OCR workers', m.workers);
             if (m.quality_retry) addMetaItem('Accuracy boost', 'On (weak pages re-scanned)');
             if (m.render_scale) addMetaItem('Render scale', m.render_scale + '×');
             if (m.method) addMetaItem('Method', m.method.replace(/_/g, ' '));
-            if (m.mean_confidence) addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
+            if (m.mean_confidence && m.ocr_pages !== 0) {
+                addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
+            }
         }
 
         resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });

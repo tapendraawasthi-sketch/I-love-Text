@@ -16,10 +16,11 @@ from app.config import (
     SANITIZE_DPI,
     SANITIZE_DPI_LARGE,
     SANITIZE_DPI_MEDIUM,
-    SANITIZE_JPEG_QUALITY,
+    SANITIZE_MAX_JPEG_BYTES,
     is_fast_ocr_mode,
 )
 from app.extract.ocr_pipeline import ocr_image
+from app.extract.page_raster import adaptive_jpeg_quality, build_image_only_pdf_page
 from app.extract.render import pixmap_to_bgr
 from app.logging_config import get_logger
 
@@ -42,21 +43,6 @@ def sanitize_dpi_for_page_count(page_count: int) -> int:
     return SANITIZE_DPI
 
 
-def _pixmap_to_jpeg(pix: fitz.Pixmap, quality: int) -> bytes:
-    gray = pix if pix.n == 1 else fitz.Pixmap(fitz.csGRAY, pix)
-    try:
-        return gray.tobytes("jpeg", jpg_quality=quality)
-    except TypeError:
-        return gray.tobytes(output="jpeg", jpg_quality=quality)
-
-
-def _add_jpeg_page(clean_doc: fitz.Document, pix: fitz.Pixmap, dpi: int, jpeg: bytes) -> None:
-    width_pt = pix.width * 72.0 / dpi
-    height_pt = pix.height * 72.0 / dpi
-    page = clean_doc.new_page(width=width_pt, height=height_pt)
-    page.insert_image(page.rect, stream=jpeg)
-
-
 def ocr_via_image_pdf_pipeline(
     document_bytes: bytes,
     filetype: str,
@@ -67,25 +53,29 @@ def ocr_via_image_pdf_pipeline(
 
     For each page:
       1. Rasterise source page to a grayscale image
-      2. Embed the JPEG into a new image-only PDF (no font/text layer)
-      3. OCR the same rasterised image
+      2. Compress JPEG (text-safe adaptive quality)
+      3. Embed into image-only PDF
+      4. OCR the same rasterised image
     """
     source = _open_document(document_bytes, filetype)
     clean_pdf = fitz.open()
     page_count = len(source)
     dpi = sanitize_dpi_for_page_count(page_count)
+    size_mb = len(document_bytes) / (1024 * 1024)
+    max_jpeg = 650_000 if size_mb > 70 else SANITIZE_MAX_JPEG_BYTES
     fast_mode = is_fast_ocr_mode(page_count) or page_count > 1
     results: list[dict[str, Any]] = []
+    used_qualities: list[int] = []
 
     try:
         if page_count == 0:
             raise ValueError(f"No pages found in {filetype.upper()} document.")
 
         logger.info(
-            "Pipeline start: %s pages, sanitize_dpi=%s, jpeg_q=%s",
+            "Pipeline start: %s pages, sanitize_dpi=%s, max_jpeg_kb=%s",
             page_count,
             dpi,
-            SANITIZE_JPEG_QUALITY,
+            max_jpeg // 1024,
         )
 
         for index in range(page_count):
@@ -97,8 +87,9 @@ def ocr_via_image_pdf_pipeline(
                 alpha=False,
                 colorspace=fitz.csGRAY,
             )
-            jpeg = _pixmap_to_jpeg(pix, SANITIZE_JPEG_QUALITY)
-            _add_jpeg_page(clean_pdf, pix, dpi, jpeg)
+            jpeg, quality = adaptive_jpeg_quality(pix, max_bytes=max_jpeg)
+            used_qualities.append(quality)
+            build_image_only_pdf_page(clean_pdf, pix, dpi, jpeg)
 
             image_bgr = pixmap_to_bgr(pix)
             results.append(
@@ -108,12 +99,14 @@ def ocr_via_image_pdf_pipeline(
             del pix, jpeg, image_bgr
             gc.collect()
 
+        avg_q = round(sum(used_qualities) / len(used_qualities), 1) if used_qualities else 0
         pipeline_meta = {
             "pipeline": "pdf_to_image_to_pdf_to_ocr",
             "sanitized_image_pdf": True,
             "sanitize_dpi": dpi,
-            "sanitize_jpeg_quality": SANITIZE_JPEG_QUALITY,
+            "avg_jpeg_quality": avg_q,
             "clean_pdf_pages": page_count,
+            "file_size_mb": round(size_mb, 2),
         }
         return results, pipeline_meta
     finally:
