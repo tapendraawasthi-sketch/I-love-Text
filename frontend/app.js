@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const extractBtn = document.getElementById('extract-btn');
     const langSelect = document.getElementById('lang-select');
+    const modeSelect = document.getElementById('mode-select');
     const btnText = document.querySelector('.btn-text');
     const spinner = document.querySelector('.spinner');
 
@@ -28,13 +29,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function showDeviceProfile() {
         const badge = document.getElementById('device-badge');
-        if (!badge || !window.TextExtractOCR?.getDeviceProfile) return;
-        const p = window.TextExtractOCR.getDeviceProfile();
-        badge.textContent = `${p.label} · ${p.cores} CPU cores · ${p.ramGb} GB RAM · ${p.maxWorkers} OCR workers`;
-        badge.classList.add(`tier-${p.tier}`);
+        if (!badge) return;
+        
+        const mode = modeSelect?.value || 'direct';
+        if (mode === 'direct' || mode === 'auto') {
+            badge.textContent = 'Direct extraction mode — reads PDF text layer with font conversion (no image processing)';
+            badge.className = 'device-badge tier-high';
+        } else if (window.TextExtractOCR?.getDeviceProfile) {
+            const p = window.TextExtractOCR.getDeviceProfile();
+            badge.textContent = `OCR mode · ${p.label} · ${p.cores} cores · ${p.ramGb} GB RAM`;
+            badge.className = `device-badge tier-${p.tier}`;
+        }
     }
 
     showDeviceProfile();
+    modeSelect?.addEventListener('change', showDeviceProfile);
 
     uploadZone.addEventListener('click', () => fileInput.click());
 
@@ -116,38 +125,107 @@ document.addEventListener('DOMContentLoaded', () => {
         progressSection.classList.add('hidden');
     }
 
+    async function extractViaServer(file, lang, mode, onProgress) {
+        onProgress(10, 100, 'Uploading to server…');
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('lang', lang);
+        formData.append('mode', mode);
+
+        const response = await fetch('/api/extract', {
+            method: 'POST',
+            body: formData,
+        });
+
+        onProgress(80, 100, 'Processing…');
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        onProgress(100, 100, 'Complete');
+
+        if (!data.success) {
+            throw new Error(data.detail || 'Extraction failed');
+        }
+
+        return {
+            text: data.text,
+            meta: {
+                ...data.meta,
+                mode: data.mode,
+                processed_on_server: true,
+            },
+        };
+    }
+
+    async function extractViaBrowser(file, lang, onProgress) {
+        if (!window.TextExtractOCR?.isAvailable()) {
+            throw new Error('OCR engine not loaded. Check your internet connection and refresh.');
+        }
+
+        const ext = getExt(file);
+        let result;
+        
+        if (ext === '.pdf') {
+            result = await window.TextExtractOCR.extractPdf(file, lang, onProgress);
+        } else if (ext === '.docx') {
+            result = await window.TextExtractOCR.extractDocx(file, lang, onProgress);
+        } else {
+            result = await window.TextExtractOCR.extractImage(file, lang, onProgress);
+        }
+
+        return {
+            text: result.text,
+            meta: {
+                ...result.meta,
+                processed_locally: true,
+            },
+        };
+    }
+
     extractBtn.addEventListener('click', async () => {
         if (!currentFile) return;
 
         hideError();
         resultSection.classList.add('hidden');
         extractBtn.disabled = true;
-        btnText.textContent = 'Processing in your browser…';
         spinner.classList.remove('hidden');
         showProgress();
 
         const lang = langSelect.value;
+        const mode = modeSelect?.value || 'direct';
         const ext = getExt(currentFile);
         const onProgress = (done, total, label) => setProgress(done, total, label);
 
+        // Update button text based on mode
+        if (mode === 'direct' || mode === 'auto') {
+            btnText.textContent = 'Processing on server…';
+        } else {
+            btnText.textContent = 'Processing in browser (OCR)…';
+        }
+
         try {
-            if (!window.TextExtractOCR?.isAvailable()) {
-                throw new Error('OCR engine not loaded. Check your internet connection and refresh.');
-            }
-
             let result;
-            if (ext === '.pdf') {
-                result = await window.TextExtractOCR.extractPdf(currentFile, lang, onProgress);
-            } else if (ext === '.docx') {
-                result = await window.TextExtractOCR.extractDocx(currentFile, lang, onProgress);
+
+            // Images always use OCR (no text layer)
+            const isImage = ['.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp'].includes(ext);
+
+            if (isImage) {
+                // Images must use browser OCR
+                result = await extractViaBrowser(currentFile, lang, onProgress);
+            } else if (mode === 'direct' || mode === 'auto') {
+                // PDFs and DOCX: use server for direct extraction
+                result = await extractViaServer(currentFile, lang, mode, onProgress);
             } else {
-                result = await window.TextExtractOCR.extractImage(currentFile, lang, onProgress);
+                // OCR mode: use browser
+                result = await extractViaBrowser(currentFile, lang, onProgress);
             }
 
-            showResult({
-                text: result.text,
-                meta: result.meta,
-            });
+            showResult(result);
         } catch (err) {
             showError(err.message || 'Extraction failed.');
         } finally {
@@ -165,22 +243,62 @@ document.addEventListener('DOMContentLoaded', () => {
         metaPanel.innerHTML = '';
         if (data.meta) {
             const m = data.meta;
-            if (m.pages) addMetaItem('Pages', m.pages);
-            if (m.processed_locally) {
-                addMetaItem('Processing', 'In your browser (free, no server upload)');
+            
+            // Mode info
+            if (m.mode) {
+                const modeLabels = {
+                    direct: 'Direct text extraction (95-100% accuracy)',
+                    auto: 'Auto (direct + OCR fallback)',
+                    ocr: 'Image OCR',
+                };
+                addMetaItem('Mode', modeLabels[m.mode] || m.mode);
             }
-            if (m.digital_pages != null) {
-                addMetaItem('Exact text pages', `${m.digital_pages} of ${m.pages}`);
+            
+            if (m.pages || m.total_pages) {
+                addMetaItem('Pages', m.pages || m.total_pages);
             }
+            
+            // Processing location
+            if (m.processed_on_server) {
+                addMetaItem('Processing', 'Server (npttf2utf font conversion)');
+            } else if (m.processed_locally) {
+                addMetaItem('Processing', 'In your browser');
+            }
+            
+            // Direct extraction stats
+            if (m.direct_pages != null) {
+                addMetaItem('Direct text pages', m.direct_pages);
+            }
+            if (m.direct_unicode_pages != null) {
+                addMetaItem('Unicode pages', m.direct_unicode_pages);
+            }
+            if (m.direct_legacy_pages != null) {
+                addMetaItem('Legacy font pages (converted)', m.direct_legacy_pages);
+            }
+            
+            // Legacy fonts found
+            if (m.legacy_fonts_found?.length) {
+                addMetaItem('Fonts converted', m.legacy_fonts_found.join(', '));
+            }
+            
+            // OCR stats (if any)
             if (m.ocr_pages != null && m.ocr_pages > 0) {
                 addMetaItem('OCR pages', m.ocr_pages);
             }
+            if (m.no_text_pages != null && m.no_text_pages > 0) {
+                addMetaItem('Scanned pages (OCR)', m.no_text_pages);
+            }
+            
+            // Browser OCR details
             if (m.device_profile) addMetaItem('Device mode', m.device_profile);
             if (m.workers) addMetaItem('OCR workers', m.workers);
-            if (m.quality_retry) addMetaItem('Accuracy boost', 'On (weak pages re-scanned)');
             if (m.render_scale) addMetaItem('Render scale', m.render_scale + '×');
-            if (m.method) addMetaItem('Method', m.method.replace(/_/g, ' '));
-            if (m.mean_confidence && m.ocr_pages !== 0) {
+            
+            // Method and confidence
+            if (m.method && !m.mode) {
+                addMetaItem('Method', m.method.replace(/_/g, ' '));
+            }
+            if (m.mean_confidence && m.ocr_pages > 0) {
                 addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
             }
         }

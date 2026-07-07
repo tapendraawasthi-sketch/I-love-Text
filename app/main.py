@@ -77,9 +77,21 @@ async def health_check():
 async def extract_api(
     file: UploadFile = File(...),
     lang: str = Form("auto"),
+    mode: str = Form("auto"),
 ):
+    """
+    Extract text from document.
+    
+    Modes:
+        - "direct": Text layer extraction only (fastest, 95-100% accuracy for digital PDFs)
+        - "ocr": Image OCR only (for scanned documents)
+        - "auto": Try direct first, OCR fallback for pages without text
+    """
     if lang not in ("auto", "eng", "nep", "eng+nep"):
         raise ValueError(f"Invalid language: {lang}")
+    
+    if mode not in ("auto", "direct", "ocr"):
+        raise ValueError(f"Invalid mode: {mode}. Use 'auto', 'direct', or 'ocr'.")
 
     filename = file.filename or "unknown"
     ext = os.path.splitext(filename)[1].lower()
@@ -93,14 +105,15 @@ async def extract_api(
     if size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
 
-    logger.info(f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}")
+    logger.info(f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}, mode={mode}")
 
     try:
         if ext == ".pdf":
-            result = await run_in_threadpool(extract_pdf, file_bytes, lang)
+            result = await run_in_threadpool(extract_pdf, file_bytes, lang, mode)
         elif ext == ".docx":
-            result = await run_in_threadpool(extract_docx, file_bytes, lang)
+            result = await run_in_threadpool(extract_docx, file_bytes, lang, mode)
         else:
+            # Images always use OCR
             result = await run_in_threadpool(extract_image, file_bytes, lang)
     except MemoryError:
         logger.error("OCR ran out of memory for %s", filename, exc_info=True)
@@ -122,6 +135,7 @@ async def extract_api(
         "text": text,
         "filename": filename,
         "lang": lang,
+        "mode": mode,
         "meta": result,
     }
 

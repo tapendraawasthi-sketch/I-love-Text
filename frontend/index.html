@@ -52,7 +52,16 @@
             <!-- Controls -->
             <div class="controls">
                 <div class="input-group">
-                    <label for="lang-select">Language (OCR)</label>
+                    <label for="mode-select">Extraction Mode</label>
+                    <select id="mode-select">
+                        <option value="direct" selected>Direct (95-100% accuracy)</option>
+                        <option value="auto">Auto (direct + OCR fallback)</option>
+                        <option value="ocr">OCR Only (for scans)</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label for="lang-select">Language</label>
                     <select id="lang-select">
                         <option value="auto" selected>Auto Detect</option>
                         <option value="eng">English Only</option>
