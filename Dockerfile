@@ -15,6 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+ENV RENDER=true
+ENV OCR_PAGE_WORKERS=1
+ENV PDF_RENDER_DPI=300
+ENV MAX_OCR_DIMENSION=3200
 
 WORKDIR /app
 

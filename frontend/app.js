@@ -98,7 +98,8 @@ document.addEventListener('DOMContentLoaded', () => {
         hideError();
         resultSection.classList.add('hidden');
         extractBtn.disabled = true;
-        btnText.classList.add('hidden');
+        btnText.textContent = 'Extracting… (large PDFs may take several minutes)';
+        btnText.classList.remove('hidden');
         spinner.classList.remove('hidden');
 
         const formData = new FormData();
@@ -106,14 +107,28 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('lang', langSelect.value);
 
         try {
+            const controller = new AbortController();
+            const timeoutMs = 15 * 60 * 1000;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
             const response = await fetch('/api/extract', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             const data = await response.json().catch(() => ({}));
 
             if (!response.ok) {
+                if (response.status === 502 || response.status === 503) {
+                    throw new Error(
+                        'Server overloaded or timed out (502). Large PDFs take several minutes on the free tier — try splitting into smaller files, or retry in a moment.'
+                    );
+                }
+                if (response.status === 507) {
+                    throw new Error(data.detail || 'Server ran out of memory processing this file. Try a smaller PDF.');
+                }
                 throw new Error(data.detail || data.error || `Server error (${response.status})`);
             }
 
@@ -125,10 +140,15 @@ document.addEventListener('DOMContentLoaded', () => {
             showResult(data);
 
         } catch (err) {
-            showError(err.message);
+            if (err.name === 'AbortError') {
+                showError('Request timed out after 15 minutes. Try splitting the PDF into smaller parts.');
+            } else {
+                showError(err.message);
+            }
         } finally {
             // Restore UI
             extractBtn.disabled = false;
+            btnText.textContent = 'Extract Text';
             btnText.classList.remove('hidden');
             spinner.classList.add('hidden');
         }

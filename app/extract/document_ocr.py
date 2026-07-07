@@ -1,18 +1,29 @@
 """
-Document-level OCR with parallel pages and adaptive high-DPI retries.
+Document-level OCR with memory-safe page processing for cloud hosting.
 """
 from __future__ import annotations
 
+import gc
 from typing import Any
 
 import fitz
-import numpy as np
 
-from app.config import PDF_RENDER_DPI, PDF_RENDER_DPI_HIGH, PDF_RETRY_CONFIDENCE
+from app.config import (
+    HIGH_DPI_RETRY_MAX_PAGES,
+    MAX_PDF_PAGES,
+    OCR_PAGE_WORKERS,
+    PARALLEL_PAGE_THRESHOLD,
+    PDF_RENDER_DPI,
+    PDF_RENDER_DPI_HIGH,
+    PDF_RETRY_CONFIDENCE,
+)
 from app.extract.ocr_pipeline import ocr_image, should_retry_page
 from app.extract.page_ocr import ocr_page_images
 from app.extract.render import render_page
+from app.logging_config import get_logger
 from app.ocr.engine import score_result_dict
+
+logger = get_logger("DocumentOCR")
 
 
 def _open_document(document_bytes: bytes, filetype: str) -> fitz.Document:
@@ -22,34 +33,39 @@ def _open_document(document_bytes: bytes, filetype: str) -> fitz.Document:
         raise ValueError(f"Failed to open {filetype.upper()} document: {exc}") from exc
 
 
-def _render_all_pages(doc: fitz.Document, dpi: int) -> list[np.ndarray]:
-    return [render_page(doc.load_page(index), dpi) for index in range(len(doc))]
-
-
-def _retry_weak_pages(
+def _ocr_single_page(
     doc: fitz.Document,
-    page_results: list[dict[str, Any]],
+    page_index: int,
     lang: str,
     *,
     digital: bool,
-) -> list[dict[str, Any]]:
-    updated = list(page_results)
+    allow_high_res: bool,
+) -> dict[str, Any]:
+    page_image = render_page(doc.load_page(page_index), PDF_RENDER_DPI)
+    try:
+        result = ocr_image(page_image, lang, digital=digital)
 
-    for index, result in enumerate(page_results):
         weak = (
-            should_retry_page(result)
-            or result["mean_confidence"] < PDF_RETRY_CONFIDENCE
+            allow_high_res
+            and (
+                should_retry_page(result)
+                or result["mean_confidence"] < PDF_RETRY_CONFIDENCE
+            )
         )
         if not weak:
-            continue
+            return result
 
-        high_res_image = render_page(doc.load_page(index), PDF_RENDER_DPI_HIGH)
-        retry = ocr_image(high_res_image, lang, digital=digital)
+        high_res_image = render_page(doc.load_page(page_index), PDF_RENDER_DPI_HIGH)
+        try:
+            retry = ocr_image(high_res_image, lang, digital=digital)
+        finally:
+            del high_res_image
 
         if score_result_dict(retry) > score_result_dict(result):
-            updated[index] = retry
-
-    return updated
+            return retry
+        return result
+    finally:
+        del page_image
 
 
 def ocr_document(
@@ -62,17 +78,60 @@ def ocr_document(
     """
     OCR every page in a document.
 
-    Uses parallel workers for multi-page files and re-renders only weak pages
-    at a higher DPI for better Nepali accuracy without slowing every page.
+    Processes pages incrementally to stay within cloud memory limits.
+    Only very short documents use parallel OCR.
     """
     doc = _open_document(document_bytes, filetype)
     try:
-        if len(doc) == 0:
+        page_count = len(doc)
+        if page_count == 0:
             raise ValueError(f"No pages found in {filetype.upper()} document.")
+        if page_count > MAX_PDF_PAGES:
+            raise ValueError(
+                f"Document has {page_count} pages. "
+                f"Maximum supported is {MAX_PDF_PAGES} pages per upload. "
+                "Split the file into smaller parts and try again."
+            )
 
-        page_images = _render_all_pages(doc, PDF_RENDER_DPI)
-        results = ocr_page_images(page_images, lang, digital=digital)
-        return _retry_weak_pages(doc, results, lang, digital=digital)
+        allow_high_res = page_count <= HIGH_DPI_RETRY_MAX_PAGES
+        use_parallel = (
+            page_count <= PARALLEL_PAGE_THRESHOLD
+            and OCR_PAGE_WORKERS > 1
+        )
+
+        logger.info(
+            "OCR start: %s pages, parallel=%s, high_res_retry=%s",
+            page_count,
+            use_parallel,
+            allow_high_res,
+        )
+
+        if use_parallel:
+            page_images = [
+                render_page(doc.load_page(index), PDF_RENDER_DPI)
+                for index in range(page_count)
+            ]
+            try:
+                return ocr_page_images(page_images, lang, digital=digital)
+            finally:
+                del page_images
+                gc.collect()
+
+        results: list[dict[str, Any]] = []
+        for index in range(page_count):
+            logger.info("OCR page %s/%s", index + 1, page_count)
+            results.append(
+                _ocr_single_page(
+                    doc,
+                    index,
+                    lang,
+                    digital=digital,
+                    allow_high_res=allow_high_res,
+                )
+            )
+            gc.collect()
+
+        return results
     finally:
         doc.close()
 

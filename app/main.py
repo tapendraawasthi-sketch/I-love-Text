@@ -17,7 +17,7 @@ from app.logging_config import get_logger
 
 logger = get_logger("TextExtract")
 
-app = FastAPI(title="TextExtract", version="2.0.0")
+app = FastAPI(title="TextExtract", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -95,12 +95,25 @@ async def extract_api(
 
     logger.info(f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}")
 
-    if ext == ".pdf":
-        result = await run_in_threadpool(extract_pdf, file_bytes, lang)
-    elif ext == ".docx":
-        result = await run_in_threadpool(extract_docx, file_bytes, lang)
-    else:
-        result = await run_in_threadpool(extract_image, file_bytes, lang)
+    try:
+        if ext == ".pdf":
+            result = await run_in_threadpool(extract_pdf, file_bytes, lang)
+        elif ext == ".docx":
+            result = await run_in_threadpool(extract_docx, file_bytes, lang)
+        else:
+            result = await run_in_threadpool(extract_image, file_bytes, lang)
+    except MemoryError:
+        logger.error("OCR ran out of memory for %s", filename, exc_info=True)
+        return JSONResponse(
+            status_code=507,
+            content={
+                "success": False,
+                "detail": (
+                    "Server ran out of memory while processing this file. "
+                    "Try a smaller PDF, fewer pages, or lower-resolution scan."
+                ),
+            },
+        )
 
     text = result.pop("text", "")
 
