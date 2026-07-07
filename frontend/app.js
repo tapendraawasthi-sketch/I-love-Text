@@ -314,6 +314,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (m.preprocessing) {
                 const pp = m.preprocessing;
                 const features = [];
+                if (pp.background_removal) features.push('background removal');
                 if (pp.local_adaptive_threshold) features.push('local adaptive threshold');
                 if (pp.noise_reduction) features.push('noise reduction');
                 if (pp.morphological_cleanup) features.push('morphological cleanup');

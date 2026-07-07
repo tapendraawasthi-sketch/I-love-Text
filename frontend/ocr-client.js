@@ -97,6 +97,125 @@
 
   // ============== IMAGE PREPROCESSING ==============
 
+  // Background removal: normalize paper to pure white, text to pure black
+  function removeBackground(data, width, height) {
+    const output = new Uint8ClampedArray(data.length);
+    
+    // Step 1: Find background color (brightest common color)
+    // Sample pixels to build histogram
+    const histogram = new Uint32Array(256);
+    for (let i = 0; i < data.length; i += 4) {
+      histogram[data[i]]++;
+    }
+    
+    // Background is typically the most common bright value (> 180)
+    let bgColor = 255;
+    let maxCount = 0;
+    for (let i = 180; i < 256; i++) {
+      if (histogram[i] > maxCount) {
+        maxCount = histogram[i];
+        bgColor = i;
+      }
+    }
+    
+    // Step 2: Find text color (darkest common color)
+    let textColor = 0;
+    maxCount = 0;
+    for (let i = 0; i < 100; i++) {
+      if (histogram[i] > maxCount) {
+        maxCount = histogram[i];
+        textColor = i;
+      }
+    }
+    
+    // Step 3: Normalize - map background to 255, text to 0
+    const range = Math.max(1, bgColor - textColor);
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const pixel = data[i];
+      // Linear mapping with clipping
+      let normalized = ((pixel - textColor) / range) * 255;
+      normalized = Math.max(0, Math.min(255, Math.round(normalized)));
+      
+      // Extra push: make light pixels whiter, dark pixels blacker
+      if (normalized > 200) normalized = 255;
+      else if (normalized < 50) normalized = 0;
+      
+      output[i] = output[i + 1] = output[i + 2] = normalized;
+      output[i + 3] = 255;
+    }
+    
+    return output;
+  }
+
+  // Auto-deskew: detect and correct slight rotation
+  function detectSkewAngle(data, width, height) {
+    // Simple Hough-like approach: find dominant horizontal lines
+    // For speed, sample every 4th row and look for dark pixel runs
+    const angles = [];
+    const sampleStep = 4;
+    
+    for (let y = height * 0.2; y < height * 0.8; y += sampleStep) {
+      let runStart = -1;
+      let runs = [];
+      
+      for (let x = 0; x < width; x++) {
+        const pixel = data[(y * width + x) * 4];
+        if (pixel < 128) { // Dark pixel
+          if (runStart === -1) runStart = x;
+        } else {
+          if (runStart !== -1 && x - runStart > 20) {
+            runs.push({ start: runStart, end: x - 1, y });
+          }
+          runStart = -1;
+        }
+      }
+      
+      // Calculate angles between runs on consecutive sampled rows
+      if (runs.length > 0 && angles.length > 0) {
+        const prevRuns = angles[angles.length - 1].runs;
+        for (const r of runs) {
+          for (const pr of prevRuns) {
+            if (Math.abs(r.start - pr.start) < 50) {
+              const dx = r.start - pr.start;
+              const dy = sampleStep;
+              const angle = Math.atan2(dx, dy) * 180 / Math.PI;
+              if (Math.abs(angle) < 5) angles.push({ angle, y });
+            }
+          }
+        }
+      }
+      angles.push({ runs, y });
+    }
+    
+    // Return median angle (or 0 if not enough data)
+    const validAngles = angles.filter(a => typeof a.angle === 'number').map(a => a.angle);
+    if (validAngles.length < 5) return 0;
+    validAngles.sort((a, b) => a - b);
+    return validAngles[Math.floor(validAngles.length / 2)];
+  }
+
+  function applyDeskew(canvas, angle) {
+    if (Math.abs(angle) < 0.1) return canvas; // Skip if nearly straight
+    
+    const w = canvas.width, h = canvas.height;
+    const dst = document.createElement('canvas');
+    // Expand canvas slightly to avoid clipping
+    const rad = angle * Math.PI / 180;
+    const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
+    dst.width = Math.ceil(w * cos + h * sin);
+    dst.height = Math.ceil(h * cos + w * sin);
+    
+    const ctx = dst.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, dst.width, dst.height);
+    ctx.translate(dst.width / 2, dst.height / 2);
+    ctx.rotate(-rad);
+    ctx.drawImage(canvas, -w / 2, -h / 2);
+    
+    return dst;
+  }
+
   // Local adaptive thresholding (Sauvola-style) - optimized version
   function applyLocalAdaptiveThreshold(data, width, height, windowSize = 15, k = 0.2) {
     const output = new Uint8ClampedArray(data.length);
@@ -257,27 +376,65 @@
 
   // Preprocessing variants
   const PREPROCESS_VARIANTS = {
-    default: { contrast: 1.3, sharpen: 1.5, localThreshold: true, denoise: true, dilate: true },
-    high_contrast: { contrast: 1.5, sharpen: 1.5, localThreshold: true, denoise: true, dilate: true },
-    extra_sharp: { contrast: 1.3, sharpen: 2.0, localThreshold: true, denoise: false, dilate: true },
-    sensitive: { contrast: 1.2, sharpen: 1.3, localThreshold: true, denoise: true, dilate: false, thresholdK: 0.1 },
+    default: { removeBg: true, contrast: 1.3, sharpen: 1.5, localThreshold: true, denoise: true, dilate: true },
+    high_contrast: { removeBg: true, contrast: 1.5, sharpen: 1.5, localThreshold: true, denoise: true, dilate: true },
+    extra_sharp: { removeBg: true, contrast: 1.3, sharpen: 2.0, localThreshold: true, denoise: false, dilate: true },
+    sensitive: { removeBg: true, contrast: 1.2, sharpen: 1.3, localThreshold: true, denoise: true, dilate: false, thresholdK: 0.1 },
+    clean: { removeBg: true, contrast: 1.4, sharpen: 1.8, localThreshold: true, denoise: true, dilate: true, deskew: true },
   };
 
   function preprocessCanvas(srcCanvas, variantName = 'default') {
     const variant = PREPROCESS_VARIANTS[variantName] || PREPROCESS_VARIANTS.default;
-    const w = srcCanvas.width, h = srcCanvas.height;
+    let canvas = srcCanvas;
+    
+    // Step 0: Deskew if enabled
+    if (variant.deskew) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = canvas.width;
+      tempCanvas.height = canvas.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(canvas, 0, 0);
+      const grayData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+      // Convert to grayscale for skew detection
+      for (let i = 0; i < grayData.data.length; i += 4) {
+        const g = 0.299 * grayData.data[i] + 0.587 * grayData.data[i + 1] + 0.114 * grayData.data[i + 2];
+        grayData.data[i] = grayData.data[i + 1] = grayData.data[i + 2] = g;
+      }
+      const angle = detectSkewAngle(grayData.data, canvas.width, canvas.height);
+      if (Math.abs(angle) > 0.3) {
+        canvas = applyDeskew(canvas, angle);
+      }
+    }
+    
+    const w = canvas.width, h = canvas.height;
     const dst = document.createElement('canvas');
     dst.width = w; dst.height = h;
     const ctx = dst.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(srcCanvas, 0, 0);
+    ctx.drawImage(canvas, 0, 0);
 
     let imgData = ctx.getImageData(0, 0, w, h);
     let d = imgData.data;
 
-    // Grayscale + contrast
+    // Grayscale conversion first
+    for (let i = 0; i < d.length; i += 4) {
+      const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+      d[i] = d[i + 1] = d[i + 2] = g;
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Step 1: Background removal - normalize paper to white, text to black
+    if (variant.removeBg) {
+      imgData = ctx.getImageData(0, 0, w, h);
+      imgData.data.set(removeBackground(imgData.data, w, h));
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    // Step 2: Contrast enhancement
+    imgData = ctx.getImageData(0, 0, w, h);
+    d = imgData.data;
     const contrast = variant.contrast;
     for (let i = 0; i < d.length; i += 4) {
-      let g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      let g = d[i];
       g = Math.max(0, Math.min(255, (g - 128) * contrast + 128));
       d[i] = d[i + 1] = d[i + 2] = Math.round(g);
     }
@@ -456,7 +613,7 @@
 
       // SLOW PATH: Try additional variants for difficult pages
       let best = { ...defaultResult, variant: 'default', fastPath: false };
-      const slowVariants = ['high_contrast', 'extra_sharp', 'sensitive'];
+      const slowVariants = ['clean', 'high_contrast', 'extra_sharp', 'sensitive'];
       
       for (const variantName of slowVariants) {
         const url = preprocessCanvas(canvas, variantName);
@@ -567,6 +724,7 @@
         device_tier: profile.tier,
         device_profile: profile.label,
         preprocessing: {
+          background_removal: true,
           contrast: profile.contrast,
           sharpen: profile.sharpenStrength,
           local_adaptive_threshold: true,
