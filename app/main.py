@@ -1,0 +1,119 @@
+"""
+Main FastAPI application.
+"""
+import os
+from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+from app.config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB, configure_tesseract
+from app.ocr.engine import available_languages
+from app.extract.pdf_handler import extract_pdf
+from app.extract.docx_handler import extract_docx
+from app.extract.image_handler import extract_image
+from app.logging_config import get_logger
+
+logger = get_logger("TextExtract")
+
+app = FastAPI(title="TextExtract", version="2.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def startup_event():
+    configure_tesseract()
+    langs = available_languages()
+    logger.info(f"Tesseract languages: {langs}")
+    if "nep" not in langs:
+        logger.warning("'nep' language pack NOT installed. Nepali OCR will fail.")
+    
+    # Check npttf2utf
+    try:
+        from npttf2utf import npttf2utf
+        logger.info("npttf2utf loaded successfully - legacy font conversion available")
+    except ImportError:
+        logger.warning("npttf2utf NOT installed. Legacy font conversion will be limited.")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "detail": "Internal server error", "error": str(exc)}
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"success": False, "detail": str(exc)})
+
+
+@app.get("/api/health")
+async def health_check():
+    langs = available_languages()
+    try:
+        from npttf2utf import npttf2utf
+        legacy_support = True
+    except ImportError:
+        legacy_support = False
+    return {
+        "status": "ok",
+        "languages": langs,
+        "legacy_font_support": legacy_support,
+    }
+
+
+@app.post("/api/extract")
+async def extract_api(
+    file: UploadFile = File(...),
+    lang: str = Form("auto"),
+):
+    if lang not in ("auto", "eng", "nep", "eng+nep"):
+        raise ValueError(f"Invalid language: {lang}")
+
+    filename = file.filename or "unknown"
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(f"File type {ext} not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}")
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    logger.info(f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}")
+
+    if ext == ".pdf":
+        result = await run_in_threadpool(extract_pdf, file_bytes, lang)
+    elif ext == ".docx":
+        result = await run_in_threadpool(extract_docx, file_bytes, lang)
+    else:
+        result = await run_in_threadpool(extract_image, file_bytes, lang)
+
+    text = result.pop("text", "")
+
+    return {
+        "success": True,
+        "text": text,
+        "filename": filename,
+        "lang": lang,
+        "meta": result,
+    }
+
+
+# Mount frontend last
+frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if os.path.exists(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")

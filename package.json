@@ -1,0 +1,12 @@
+{
+  "name": "zipscan-pro",
+  "version": "1.0.0",
+  "description": "Advanced OCR ZIP Image Text Extractor",
+  "scripts": {
+    "build": "echo 'Static site — no build needed'",
+    "start": "npx serve frontend/zipscan -l $PORT"
+  },
+  "dependencies": {
+    "serve": "^14.2.3"
+  }
+}

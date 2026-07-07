@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: nepaleconomy
+    runtime: node
+    buildCommand: npm install
+    startCommand: npx serve frontend/zipscan -l $PORT
+    pullRequestPreviewsEnabled: false

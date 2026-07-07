@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TextExtract &mdash; English & Nepali</title>
+    
+    <!-- Noto Sans Devanagari for rendering Nepali text properly -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>TextExtract</h1>
+            <p>Image-first Nepali OCR from PDF, DOCX, and images. Documents are rendered to images before extraction so Preeti/Kantipur font bias is avoided and tables keep their layout.</p>
+        </header>
+
+        <main>
+            <!-- Error Banner -->
+            <div id="error-banner" class="hidden">
+                <span id="error-message"></span>
+                <button type="button" class="close-btn" onclick="document.getElementById('error-banner').classList.add('hidden')">&times;</button>
+            </div>
+
+            <!-- Upload Zone -->
+            <div id="upload-zone" class="upload-zone" tabindex="0">
+                <input type="file" id="file-input" accept=".pdf,.docx,.png,.jpg,.jpeg,.tiff,.bmp,.webp" hidden>
+                <div class="upload-content">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
+                    <p class="upload-hint">Supports PDF, DOCX, PNG, JPG, TIFF (Max 25MB)</p>
+                </div>
+                <div id="file-info" class="file-info hidden">
+                    <span id="file-name"></span>
+                    <span id="file-size"></span>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls">
+                <div class="input-group">
+                    <label for="lang-select">Language (OCR)</label>
+                    <select id="lang-select">
+                        <option value="auto" selected>Auto Detect</option>
+                        <option value="eng">English Only</option>
+                        <option value="nep">Nepali Only</option>
+                        <option value="eng+nep">English + Nepali</option>
+                    </select>
+                </div>
+                
+                <button id="extract-btn" disabled>
+                    <span class="btn-text">Extract Text</span>
+                    <span class="spinner hidden"></span>
+                </button>
+            </div>
+
+            <!-- Results -->
+            <div id="result-section" class="result-section hidden">
+                <div class="result-header">
+                    <h2>Extracted Text</h2>
+                    <div class="result-actions">
+                        <button id="copy-btn" class="secondary-btn">Copy</button>
+                        <button id="download-btn" class="secondary-btn">Download .txt</button>
+                    </div>
+                </div>
+                
+                <textarea id="result-text" readonly lang="ne" placeholder="Extracted text will appear here..."></textarea>
+                
+                <div class="meta-panel" id="meta-panel">
+                    <!-- Meta info populated by JS -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
