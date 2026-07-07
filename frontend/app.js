@@ -166,11 +166,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const m = data.meta;
             if (m.pages) addMetaItem('Pages', m.pages);
             if (m.method_per_page) {
-                const ocrCount = m.method_per_page.filter(x => x === 'image_ocr' || x === 'ocr').length;
-                addMetaItem('Extraction Method', `Image OCR on all ${ocrCount} page(s)`);
+                const ocrCount = m.method_per_page.filter(
+                    x => x === 'image_pdf_ocr' || x === 'image_ocr' || x === 'ocr'
+                ).length;
+                const methodLabel = m.pipeline === 'pdf_to_image_to_pdf_to_ocr'
+                    ? 'PDF → Image → PDF → OCR'
+                    : 'Image OCR';
+                addMetaItem('Extraction Method', `${methodLabel} on all ${ocrCount} page(s)`);
             } else if (m.method) {
-                const label = m.method === 'image_ocr' ? 'Image OCR' : m.method.toUpperCase();
+                const label = m.method === 'image_pdf_ocr'
+                    ? 'PDF → Image → PDF → OCR'
+                    : m.method === 'image_ocr'
+                        ? 'Image OCR'
+                        : m.method.toUpperCase();
                 addMetaItem('Extraction Method', label);
+            }
+            if (m.sanitize_dpi) {
+                addMetaItem('Sanitize DPI', m.sanitize_dpi);
             }
             if (m.mean_confidence) addMetaItem('OCR Confidence', `${m.mean_confidence.toFixed(1)}%`);
         }
