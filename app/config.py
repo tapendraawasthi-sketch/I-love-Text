@@ -7,8 +7,7 @@ import pytesseract
 _IS_RENDER = bool(os.getenv("RENDER"))
 
 # File limitations
-MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
-MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "80"))
+MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 ALLOWED_EXTENSIONS: set[str] = {
     ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"
 }
@@ -56,6 +55,20 @@ OCR_PAGE_WORKERS: int = int(os.getenv("OCR_PAGE_WORKERS", _DEFAULT_WORKERS))
 
 # Only parallelize very small documents.
 PARALLEL_PAGE_THRESHOLD: int = int(os.getenv("PARALLEL_PAGE_THRESHOLD", "2"))
+
+
+def render_dpi_for_page_count(page_count: int) -> int:
+    """Use slightly lower DPI on very large documents to finish within time limits."""
+    if page_count > 150:
+        return int(os.getenv("PDF_RENDER_DPI_LARGE", "240"))
+    if page_count > 50:
+        return int(os.getenv("PDF_RENDER_DPI_MEDIUM", "270"))
+    return PDF_RENDER_DPI
+
+
+def is_fast_ocr_mode(page_count: int) -> bool:
+    """Skip expensive retries on large documents."""
+    return page_count > int(os.getenv("FAST_OCR_PAGE_THRESHOLD", "30"))
 
 
 def configure_tesseract() -> None:

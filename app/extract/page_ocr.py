@@ -17,18 +17,22 @@ def ocr_page_images(
     lang: str,
     *,
     digital: bool,
+    fast: bool = False,
 ) -> list[dict[str, Any]]:
     """OCR multiple page images, using parallel workers when beneficial."""
     if not page_images:
         return []
 
     if len(page_images) == 1 or OCR_PAGE_WORKERS <= 1:
-        return [ocr_image(image, lang, digital=digital) for image in page_images]
+        return [
+            ocr_image(image, lang, digital=digital, fast=fast)
+            for image in page_images
+        ]
 
     workers = min(OCR_PAGE_WORKERS, len(page_images))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [
-            executor.submit(ocr_image, image, lang, digital=digital)
+            executor.submit(ocr_image, image, lang, digital=digital, fast=fast)
             for image in page_images
         ]
         return [future.result() for future in futures]

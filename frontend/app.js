@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const metaPanel = document.getElementById('meta-panel');
 
     let currentFile = null;
-    const MAX_MB = 25;
+    const MAX_MB = 50;
 
     // --- File Selection ---
     
@@ -98,7 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
         hideError();
         resultSection.classList.add('hidden');
         extractBtn.disabled = true;
-        btnText.textContent = 'Extracting… (large PDFs may take several minutes)';
+        btnText.textContent = 'Extracting… (300+ page PDFs can take 1–2 hours)';
         btnText.classList.remove('hidden');
         spinner.classList.remove('hidden');
 
@@ -108,7 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const controller = new AbortController();
-            const timeoutMs = 15 * 60 * 1000;
+            const timeoutMs = 3 * 60 * 60 * 1000;
             const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
             const response = await fetch('/api/extract', {
@@ -141,7 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (err) {
             if (err.name === 'AbortError') {
-                showError('Request timed out after 15 minutes. Try splitting the PDF into smaller parts.');
+                showError('Request timed out after 3 hours. The server may still be processing — check Render logs, or split the PDF.');
             } else {
                 showError(err.message);
             }

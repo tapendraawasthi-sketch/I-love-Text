@@ -151,12 +151,12 @@ def run_ocr(image: np.ndarray, lang: str, config: str | None = None) -> dict:
     }
 
 
-def run_ocr_smart(image: np.ndarray, lang: str) -> dict:
+def run_ocr_smart(image: np.ndarray, lang: str, *, fast: bool = False) -> dict:
     """
     Fast OCR with selective retries.
 
     Runs one primary pass first, then only retries alternate PSM modes when
-    confidence or word count is weak.
+    confidence or word count is weak. In fast mode, uses a single pass only.
     """
     resolved_lang = resolve_ocr_lang(lang)
     result = run_ocr(
@@ -165,7 +165,7 @@ def run_ocr_smart(image: np.ndarray, lang: str) -> dict:
         config=_build_config(OCR_PSM_PRIMARY),
     )
 
-    if _good_enough(result):
+    if fast or _good_enough(result):
         return result
 
     best = result

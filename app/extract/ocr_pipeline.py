@@ -18,11 +18,17 @@ def should_retry_page(result: dict) -> bool:
     )
 
 
-def ocr_image(image_bgr: np.ndarray, lang: str, *, digital: bool) -> dict:
+def ocr_image(
+    image_bgr: np.ndarray,
+    lang: str,
+    *,
+    digital: bool,
+    fast: bool = False,
+) -> dict:
     clean_img = preprocess_for_ocr(image_bgr, aggressive=False, digital=digital)
-    result = run_ocr_smart(clean_img, lang)
+    result = run_ocr_smart(clean_img, lang, fast=fast)
 
-    if not should_retry_page(result):
+    if fast or not should_retry_page(result):
         return result
 
     retry_img = preprocess_for_ocr(
@@ -30,7 +36,7 @@ def ocr_image(image_bgr: np.ndarray, lang: str, *, digital: bool) -> dict:
         aggressive=not digital,
         digital=False,
     )
-    retry = run_ocr_smart(retry_img, lang)
+    retry = run_ocr_smart(retry_img, lang, fast=fast)
 
     if score_result_dict(retry) > score_result_dict(result):
         return retry

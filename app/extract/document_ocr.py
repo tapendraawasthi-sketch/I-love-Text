@@ -10,12 +10,12 @@ import fitz
 
 from app.config import (
     HIGH_DPI_RETRY_MAX_PAGES,
-    MAX_PDF_PAGES,
     OCR_PAGE_WORKERS,
     PARALLEL_PAGE_THRESHOLD,
-    PDF_RENDER_DPI,
     PDF_RENDER_DPI_HIGH,
     PDF_RETRY_CONFIDENCE,
+    is_fast_ocr_mode,
+    render_dpi_for_page_count,
 )
 from app.extract.ocr_pipeline import ocr_image, should_retry_page
 from app.extract.page_ocr import ocr_page_images
@@ -40,13 +40,16 @@ def _ocr_single_page(
     *,
     digital: bool,
     allow_high_res: bool,
+    render_dpi: int,
+    fast_mode: bool,
 ) -> dict[str, Any]:
-    page_image = render_page(doc.load_page(page_index), PDF_RENDER_DPI)
+    page_image = render_page(doc.load_page(page_index), render_dpi)
     try:
-        result = ocr_image(page_image, lang, digital=digital)
+        result = ocr_image(page_image, lang, digital=digital, fast=fast_mode)
 
         weak = (
             allow_high_res
+            and not fast_mode
             and (
                 should_retry_page(result)
                 or result["mean_confidence"] < PDF_RETRY_CONFIDENCE
@@ -57,7 +60,7 @@ def _ocr_single_page(
 
         high_res_image = render_page(doc.load_page(page_index), PDF_RENDER_DPI_HIGH)
         try:
-            retry = ocr_image(high_res_image, lang, digital=digital)
+            retry = ocr_image(high_res_image, lang, digital=digital, fast=False)
         finally:
             del high_res_image
 
@@ -79,47 +82,50 @@ def ocr_document(
     OCR every page in a document.
 
     Processes pages incrementally to stay within cloud memory limits.
-    Only very short documents use parallel OCR.
+    No page-count cap — large files use a faster OCR path automatically.
     """
     doc = _open_document(document_bytes, filetype)
     try:
         page_count = len(doc)
         if page_count == 0:
             raise ValueError(f"No pages found in {filetype.upper()} document.")
-        if page_count > MAX_PDF_PAGES:
-            raise ValueError(
-                f"Document has {page_count} pages. "
-                f"Maximum supported is {MAX_PDF_PAGES} pages per upload. "
-                "Split the file into smaller parts and try again."
-            )
 
-        allow_high_res = page_count <= HIGH_DPI_RETRY_MAX_PAGES
+        render_dpi = render_dpi_for_page_count(page_count)
+        fast_mode = is_fast_ocr_mode(page_count)
+        allow_high_res = page_count <= HIGH_DPI_RETRY_MAX_PAGES and not fast_mode
         use_parallel = (
             page_count <= PARALLEL_PAGE_THRESHOLD
             and OCR_PAGE_WORKERS > 1
         )
 
         logger.info(
-            "OCR start: %s pages, parallel=%s, high_res_retry=%s",
+            "OCR start: %s pages, dpi=%s, parallel=%s, fast=%s",
             page_count,
+            render_dpi,
             use_parallel,
-            allow_high_res,
+            fast_mode,
         )
 
         if use_parallel:
             page_images = [
-                render_page(doc.load_page(index), PDF_RENDER_DPI)
+                render_page(doc.load_page(index), render_dpi)
                 for index in range(page_count)
             ]
             try:
-                return ocr_page_images(page_images, lang, digital=digital)
+                return ocr_page_images(
+                    page_images,
+                    lang,
+                    digital=digital,
+                    fast=fast_mode,
+                )
             finally:
                 del page_images
                 gc.collect()
 
         results: list[dict[str, Any]] = []
         for index in range(page_count):
-            logger.info("OCR page %s/%s", index + 1, page_count)
+            if page_count >= 20 and index % 10 == 0:
+                logger.info("OCR progress: page %s/%s", index + 1, page_count)
             results.append(
                 _ocr_single_page(
                     doc,
@@ -127,6 +133,8 @@ def ocr_document(
                     lang,
                     digital=digital,
                     allow_high_res=allow_high_res,
+                    render_dpi=render_dpi,
+                    fast_mode=fast_mode,
                 )
             )
             gc.collect()
