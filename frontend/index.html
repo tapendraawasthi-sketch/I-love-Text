@@ -16,7 +16,7 @@
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p><strong>Maximum Quality OCR</strong> — renders every page at high resolution (400 DPI) and uses Tesseract with best Nepali language model. Accuracy prioritized over speed. Large files (300 pages) may take 10-15 minutes.</p>
+            <p><strong>Maximum Accuracy OCR</strong> — Pure image-based OCR with advanced preprocessing: adaptive binarization, noise reduction, sharpening. Renders at 350-400 DPI. Large files may take 15-20 minutes.</p>
             <p id="device-badge" class="device-badge">Detecting your device…</p>
         </header>
 
@@ -33,7 +33,7 @@
                 <div class="upload-content">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
-                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · Maximum quality OCR · Large files may take 10-15 minutes</p>
+                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · Pure OCR (no text layer extraction) · Large files may take 15-20 minutes</p>
                 </div>
                 <div id="file-info" class="file-info hidden">
                     <span id="file-name"></span>
@@ -101,9 +101,8 @@
     <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="preeti.js"></script>
-    <script src="precision-extract.js"></script>
-    <script src="image-compress.js?v=4"></script>
-    <script src="ocr-client.js?v=4"></script>
-    <script src="app.js?v=4"></script>
+    <script src="image-compress.js?v=5"></script>
+    <script src="ocr-client.js?v=5"></script>
+    <script src="app.js?v=5"></script>
 </body>
 </html>

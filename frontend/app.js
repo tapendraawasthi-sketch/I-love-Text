@@ -245,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const ext = getExt(currentFile);
         const onProgress = (done, total, label) => setProgress(done, total, label);
 
-        btnText.textContent = 'Processing (max quality OCR)…';
+        btnText.textContent = 'Processing (pure OCR)…';
 
         try {
             // All files use browser OCR for maximum quality
@@ -274,26 +274,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem('Pages processed', m.pages);
             }
             
-            addMetaItem('Processing', 'In your browser (max quality OCR)');
+            addMetaItem('Method', m.method || 'Pure image OCR');
+            addMetaItem('Processing', 'In your browser');
             
             if (m.device_profile) {
-                addMetaItem('Device', m.device_profile);
+                addMetaItem('Device mode', m.device_profile);
             }
             
             if (m.render_scale) {
-                addMetaItem('Render scale', m.render_scale + '× (high resolution)');
+                const dpi = Math.round(m.render_scale * 72);
+                addMetaItem('Render quality', `${m.render_scale}× scale (~${dpi} DPI)`);
             }
             
-            if (m.mean_confidence) {
-                addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
+            if (m.mean_confidence !== undefined) {
+                let confLabel = `${m.mean_confidence}%`;
+                if (m.min_confidence !== undefined && m.max_confidence !== undefined) {
+                    confLabel += ` (range: ${m.min_confidence}%-${m.max_confidence}%)`;
+                }
+                addMetaItem('OCR Confidence', confLabel);
             }
             
             if (m.workers) {
-                addMetaItem('OCR workers used', m.workers);
+                addMetaItem('Parallel workers', m.workers);
             }
             
-            if (m.quality_retry) {
-                addMetaItem('Quality boost', 'Weak pages re-processed at higher resolution');
+            if (m.preprocessing) {
+                const pp = m.preprocessing;
+                const features = [];
+                if (pp.contrast) features.push(`contrast ${pp.contrast}×`);
+                if (pp.sharpen) features.push(`sharpen ${pp.sharpen}×`);
+                if (pp.adaptive_threshold) features.push('adaptive threshold');
+                if (pp.noise_reduction) features.push('noise reduction');
+                if (features.length) {
+                    addMetaItem('Preprocessing', features.join(', '));
+                }
+            }
+            
+            if (m.psm_used) {
+                addMetaItem('Tesseract PSM', m.psm_used);
             }
         }
 
