@@ -274,7 +274,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem('Pages processed', m.pages);
             }
             
-            addMetaItem('Method', m.method || 'Pure image OCR');
+            addMetaItem('Method', m.method || 'Multi-pass OCR');
             addMetaItem('Processing', 'In your browser');
             
             if (m.device_profile) {
@@ -294,8 +294,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem('OCR Confidence', confLabel);
             }
             
-            if (m.workers) {
-                addMetaItem('Parallel workers', m.workers);
+            if (m.total_nepali_chars) {
+                addMetaItem('Nepali characters', m.total_nepali_chars);
+            }
+            
+            if (m.variant_used) {
+                addMetaItem('Best variant', m.variant_used);
             }
             
             if (m.preprocessing) {
@@ -303,15 +307,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const features = [];
                 if (pp.contrast) features.push(`contrast ${pp.contrast}×`);
                 if (pp.sharpen) features.push(`sharpen ${pp.sharpen}×`);
-                if (pp.adaptive_threshold) features.push('adaptive threshold');
+                if (pp.local_adaptive_threshold) features.push('local adaptive threshold');
                 if (pp.noise_reduction) features.push('noise reduction');
+                if (pp.morphological_cleanup) features.push('morphological cleanup');
+                if (pp.multi_pass) features.push('multi-pass (6 variants)');
                 if (features.length) {
                     addMetaItem('Preprocessing', features.join(', '));
                 }
-            }
-            
-            if (m.psm_used) {
-                addMetaItem('Tesseract PSM', m.psm_used);
             }
         }
 
