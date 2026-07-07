@@ -157,7 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function safePdfDownloadName(originalName) {
         const base = originalName.replace(/\.[^/.]+$/, '');
         const ascii = base.replace(/[^\w.\- ]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-        return `${ascii || 'document'}_image.pdf`;
+        const stamp = Date.now();
+        return `${ascii || 'document'}_image_${stamp}.pdf`;
     }
 
     // Convert to Image PDF (runs in browser — same as OCR)
@@ -216,13 +217,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function showConversionSuccess(meta) {
         resultSection.classList.remove('hidden');
-        resultText.value = `✓ Image PDF created successfully!\n\nPages: ${meta.pages || 'N/A'}\nSize: ${meta.output_size_mb || 'N/A'} MB\n\nThe PDF has been downloaded. You can now use it with:\n• ChatGPT (Vision)\n• Claude\n• Google Gemini\n• Any AI with image/document understanding`;
+        resultText.value = `✓ Image-only PDF created successfully!\n\nPages: ${meta.pages || 'N/A'}\nInput size: ${meta.input_size_mb || 'N/A'} MB\nOutput size: ${meta.output_size_mb || 'N/A'} MB\n\nThis PDF contains only page images — text cannot be selected or copied.\nUpload it to ChatGPT, Claude, or Gemini for better text understanding.`;
         metaPanel.innerHTML = '';
-        addMetaItem('Format', 'Image-only PDF (no text layer)');
+        addMetaItem('Format', 'Image-only PDF (JPEG pages, no text layer)');
         addMetaItem('Processing', 'In your browser');
         addMetaItem('Pages converted', meta.pages || 'N/A');
+        addMetaItem('Input size', (meta.input_size_mb || 'N/A') + ' MB');
         addMetaItem('Output size', (meta.output_size_mb || 'N/A') + ' MB');
         addMetaItem('Render DPI', (meta.dpi || 'N/A') + ' (high quality)');
+        if (meta.embedded_image_bytes) {
+            addMetaItem('Embedded images', `${Math.round(meta.embedded_image_bytes / 1024)} KB total`);
+        }
         resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 

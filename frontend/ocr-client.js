@@ -463,10 +463,13 @@
   }
 
   function isImagePdfAvailable() {
-    return typeof pdfjsLib !== 'undefined' && typeof window.jspdf !== 'undefined';
+    return typeof pdfjsLib !== 'undefined' && typeof PDFLib !== 'undefined';
   }
 
-  async function loadPdfDocument(file) {
+  const PDFJS_CMAP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/';
+  const PDFJS_FONT_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/';
+
+  async function loadPdfDocumentForImages(file) {
     if (typeof pdfjsLib === 'undefined') {
       throw new Error('PDF.js not loaded. Check your internet connection and refresh.');
     }
@@ -476,8 +479,10 @@
 
     return pdfjsLib.getDocument({
       data: await file.arrayBuffer(),
-      disableFontFace: true,
-      nativeImageDecoderSupport: 'none',
+      disableFontFace: false,
+      standardFontDataUrl: PDFJS_FONT_URL,
+      cMapUrl: PDFJS_CMAP_URL,
+      cMapPacked: true,
     }).promise;
   }
 
@@ -488,57 +493,74 @@
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({
+      canvasContext: ctx,
+      viewport,
+      intent: 'print',
+    }).promise;
     return { canvas, baseViewport };
   }
 
-  function canvasToJpegDataUrl(canvas, quality) {
-    return canvas.toDataURL('image/jpeg', quality);
+  function canvasToJpegBytes(canvas, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(async (blob) => {
+        if (!blob) {
+          reject(new Error('Failed to encode page image.'));
+          return;
+        }
+        resolve(new Uint8Array(await blob.arrayBuffer()));
+      }, 'image/jpeg', quality);
+    });
   }
 
   function imagePdfScaleForPages(pageCount) {
-    // ~300 DPI equivalent for AI vision (pdf.js scale 1 = 72 DPI)
     if (pageCount > 150) return 3.5;
     if (pageCount > 50) return 4.0;
     return 4.5;
   }
 
   async function convertPdfToImagePdf(file, onProgress, options = {}) {
+    if (typeof PDFLib === 'undefined') {
+      throw new Error('PDF library not loaded. Check your internet connection and refresh.');
+    }
+
     const jpegQuality = options.jpegQuality ?? 0.92;
-    const pdf = await loadPdfDocument(file);
+    const pdf = await loadPdfDocumentForImages(file);
     const totalPages = pdf.numPages;
     const renderScale = options.renderScale ?? imagePdfScaleForPages(totalPages);
-    const { jsPDF } = window.jspdf;
-    let doc = null;
+    const outputDoc = await PDFLib.PDFDocument.create();
+    let totalJpegBytes = 0;
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum += 1) {
       const { canvas, baseViewport } = await renderPdfPageCanvas(pdf, pageNum, renderScale);
-      const jpeg = canvasToJpegDataUrl(canvas, jpegQuality);
+      const jpegBytes = await canvasToJpegBytes(canvas, jpegQuality);
+      totalJpegBytes += jpegBytes.length;
 
-      const widthPt = baseViewport.width;
-      const heightPt = baseViewport.height;
-
-      if (pageNum === 1) {
-        doc = new jsPDF({
-          unit: 'pt',
-          format: [widthPt, heightPt],
-          compress: true,
-        });
-      } else {
-        doc.addPage([widthPt, heightPt]);
+      if (jpegBytes.length < 1024) {
+        throw new Error(`Page ${pageNum} did not render correctly. Try another browser.`);
       }
 
-      doc.addImage(jpeg, 'JPEG', 0, 0, widthPt, heightPt, undefined, 'FAST');
+      const embedded = await outputDoc.embedJpg(jpegBytes);
+      const widthPt = baseViewport.width;
+      const heightPt = baseViewport.height;
+      const page = outputDoc.addPage([widthPt, heightPt]);
+      page.drawImage(embedded, {
+        x: 0,
+        y: 0,
+        width: widthPt,
+        height: heightPt,
+      });
 
       if (onProgress) {
         onProgress(pageNum, totalPages, `Rendering page ${pageNum}/${totalPages}…`);
       }
     }
 
-    const blob = doc.output('blob');
+    const pdfBytes = await outputDoc.save();
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
     const dpi = Math.round(renderScale * 72);
 
     return {
@@ -550,6 +572,8 @@
         jpeg_quality: jpegQuality,
         output_size_mb: Math.round((blob.size / (1024 * 1024)) * 100) / 100,
         input_size_mb: Math.round((file.size / (1024 * 1024)) * 100) / 100,
+        embedded_image_bytes: totalJpegBytes,
+        image_only_pdf: true,
         processed_locally: true,
       },
     };
@@ -558,6 +582,9 @@
   async function convertDocxToImagePdf(file, onProgress, options = {}) {
     if (typeof docx === 'undefined' || typeof html2canvas === 'undefined') {
       throw new Error('DOCX libraries not loaded. Check your internet connection and refresh.');
+    }
+    if (typeof PDFLib === 'undefined') {
+      throw new Error('PDF library not loaded. Check your internet connection and refresh.');
     }
 
     const jpegQuality = options.jpegQuality ?? 0.92;
@@ -581,8 +608,7 @@
         pageElements = [container];
       }
 
-      const { jsPDF } = window.jspdf;
-      let doc = null;
+      const outputDoc = await PDFLib.PDFDocument.create();
       const totalPages = pageElements.length;
 
       for (let index = 0; index < totalPages; index += 1) {
@@ -593,29 +619,26 @@
           logging: false,
           useCORS: true,
         });
-        const jpeg = canvasToJpegDataUrl(canvas, jpegQuality);
+        const jpegBytes = await canvasToJpegBytes(canvas, jpegQuality);
+        const embedded = await outputDoc.embedJpg(jpegBytes);
 
         const widthPt = (canvas.width / renderScale) * (72 / 96);
         const heightPt = (canvas.height / renderScale) * (72 / 96);
-
-        if (index === 0) {
-          doc = new jsPDF({
-            unit: 'pt',
-            format: [widthPt, heightPt],
-            compress: true,
-          });
-        } else {
-          doc.addPage([widthPt, heightPt]);
-        }
-
-        doc.addImage(jpeg, 'JPEG', 0, 0, widthPt, heightPt, undefined, 'FAST');
+        const page = outputDoc.addPage([widthPt, heightPt]);
+        page.drawImage(embedded, {
+          x: 0,
+          y: 0,
+          width: widthPt,
+          height: heightPt,
+        });
 
         if (onProgress) {
           onProgress(index + 1, totalPages, `Rendering page ${index + 1}/${totalPages}…`);
         }
       }
 
-      const blob = doc.output('blob');
+      const pdfBytes = await outputDoc.save();
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       return {
         blob,
         meta: {
@@ -625,6 +648,7 @@
           jpeg_quality: jpegQuality,
           output_size_mb: Math.round((blob.size / (1024 * 1024)) * 100) / 100,
           input_size_mb: Math.round((file.size / (1024 * 1024)) * 100) / 100,
+          image_only_pdf: true,
           processed_locally: true,
         },
       };
