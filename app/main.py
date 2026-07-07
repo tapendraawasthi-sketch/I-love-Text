@@ -3,7 +3,7 @@ Main FastAPI application.
 """
 import os
 from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -13,6 +13,7 @@ from app.ocr.engine import available_languages
 from app.extract.pdf_handler import extract_pdf
 from app.extract.docx_handler import extract_docx
 from app.extract.image_handler import extract_image
+from app.extract.raster_pipeline import convert_to_image_pdf
 from app.logging_config import get_logger
 
 logger = get_logger("TextExtract")
@@ -139,6 +140,75 @@ async def extract_api(
         "mode": mode,
         "meta": result,
     }
+
+
+@app.post("/api/convert-to-image-pdf")
+async def convert_to_image_pdf_api(
+    file: UploadFile = File(...),
+    dpi: int = Form(350),
+    quality: int = Form(92),
+):
+    """
+    Convert PDF to image-only PDF.
+    
+    Each page is rendered as a high-quality image and saved into a new PDF.
+    The output PDF has no text layer - just images of the pages.
+    Perfect for using with AI vision models (ChatGPT, Claude, Gemini).
+    
+    Args:
+        file: PDF or DOCX file
+        dpi: Render resolution (default 350, higher = better quality but larger file)
+        quality: JPEG quality 1-100 (default 92)
+    """
+    filename = file.filename or "document"
+    ext = os.path.splitext(filename)[1].lower()
+    
+    if ext not in (".pdf", ".docx"):
+        raise ValueError("Only PDF and DOCX files are supported for conversion.")
+    
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+    
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+    
+    logger.info(f"Converting to image PDF: {filename} ({size_mb:.2f}MB), dpi={dpi}, quality={quality}")
+    
+    try:
+        filetype = "pdf" if ext == ".pdf" else "docx"
+        pdf_bytes, meta = await run_in_threadpool(
+            convert_to_image_pdf, 
+            file_bytes, 
+            filetype,
+            dpi,
+            quality,
+        )
+    except MemoryError:
+        logger.error("Conversion ran out of memory for %s", filename, exc_info=True)
+        return JSONResponse(
+            status_code=507,
+            content={
+                "success": False,
+                "detail": "Server ran out of memory. Try a smaller file or lower DPI.",
+            },
+        )
+    
+    # Generate output filename
+    base_name = os.path.splitext(filename)[0]
+    output_filename = f"{base_name}_image.pdf"
+    
+    logger.info(f"Conversion complete: {meta['pages']} pages, {meta['output_size_mb']}MB")
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{output_filename}"',
+            "X-Pages": str(meta["pages"]),
+            "X-DPI": str(meta["dpi"]),
+            "X-Output-Size-MB": str(meta["output_size_mb"]),
+        },
+    )
 
 
 # Mount frontend last

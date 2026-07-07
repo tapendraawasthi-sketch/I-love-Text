@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileSize = document.getElementById('file-size');
 
     const extractBtn = document.getElementById('extract-btn');
+    const convertPdfBtn = document.getElementById('convert-pdf-btn');
     const langSelect = document.getElementById('lang-select');
     const btnText = document.querySelector('.btn-text');
     const spinner = document.querySelector('.spinner');
@@ -101,6 +102,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateUI() {
         extractBtn.disabled = !currentFile;
+        
+        // Convert to Image PDF only works for PDF/DOCX
+        const ext = currentFile ? getExt(currentFile) : '';
+        const canConvert = currentFile && (ext === '.pdf' || ext === '.docx');
+        convertPdfBtn.disabled = !canConvert;
+        
         if (!currentFile) {
             document.querySelector('.upload-content').classList.remove('hidden');
             fileInfo.classList.add('hidden');
@@ -147,12 +154,93 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    // Convert to Image PDF
+    convertPdfBtn.addEventListener('click', async () => {
+        if (!currentFile) return;
+        
+        const ext = getExt(currentFile);
+        if (ext !== '.pdf' && ext !== '.docx') {
+            showError('Only PDF and DOCX files can be converted to image PDF.');
+            return;
+        }
+
+        hideError();
+        convertPdfBtn.disabled = true;
+        extractBtn.disabled = true;
+        const originalText = convertPdfBtn.textContent;
+        convertPdfBtn.textContent = 'Converting...';
+        showProgress();
+        setProgress(30, 100, 'Converting pages to images...');
+
+        try {
+            const formData = new FormData();
+            formData.append('file', currentFile);
+            formData.append('dpi', '350');
+            formData.append('quality', '92');
+
+            const response = await fetch('/api/convert-to-image-pdf', {
+                method: 'POST',
+                body: formData,
+            });
+
+            setProgress(80, 100, 'Preparing download...');
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `Server error: ${response.status}`);
+            }
+
+            // Get the PDF blob
+            const blob = await response.blob();
+            
+            // Get metadata from headers
+            const pages = response.headers.get('X-Pages');
+            const outputSizeMb = response.headers.get('X-Output-Size-MB');
+            
+            setProgress(100, 100, 'Download ready!');
+
+            // Create download link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const baseName = currentFile.name.replace(/\.[^/.]+$/, '');
+            a.download = `${baseName}_image.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            // Show success message
+            showConversionSuccess(pages, outputSizeMb);
+
+        } catch (err) {
+            showError(err.message || 'Conversion failed.');
+        } finally {
+            convertPdfBtn.disabled = false;
+            extractBtn.disabled = !currentFile;
+            convertPdfBtn.textContent = originalText;
+            hideProgress();
+        }
+    });
+
+    function showConversionSuccess(pages, sizeMb) {
+        resultSection.classList.remove('hidden');
+        resultText.value = `✓ Image PDF created successfully!\n\nPages: ${pages || 'N/A'}\nSize: ${sizeMb || 'N/A'} MB\n\nThe PDF has been downloaded. You can now use it with:\n• ChatGPT (Vision)\n• Claude\n• Google Gemini\n• Any AI with image/document understanding`;
+        metaPanel.innerHTML = '';
+        addMetaItem('Format', 'Image-only PDF (no text layer)');
+        addMetaItem('Pages converted', pages || 'N/A');
+        addMetaItem('Output size', (sizeMb || 'N/A') + ' MB');
+        addMetaItem('DPI', '350 (high quality)');
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
     extractBtn.addEventListener('click', async () => {
         if (!currentFile) return;
 
         hideError();
         resultSection.classList.add('hidden');
         extractBtn.disabled = true;
+        convertPdfBtn.disabled = true;
         spinner.classList.remove('hidden');
         showProgress();
 
@@ -170,6 +258,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showError(err.message || 'Extraction failed.');
         } finally {
             extractBtn.disabled = false;
+            convertPdfBtn.disabled = !currentFile || !['.pdf', '.docx'].includes(getExt(currentFile));
             btnText.textContent = 'Extract Text (Max Quality)';
             spinner.classList.add('hidden');
             hideProgress();

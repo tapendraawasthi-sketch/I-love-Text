@@ -112,3 +112,76 @@ def ocr_via_image_pdf_pipeline(
     finally:
         source.close()
         clean_pdf.close()
+
+
+def convert_to_image_pdf(
+    document_bytes: bytes,
+    filetype: str = "pdf",
+    dpi: int | None = None,
+    jpeg_quality: int = 92,
+) -> tuple[bytes, dict[str, Any]]:
+    """
+    Convert PDF/DOCX to image-only PDF.
+    
+    Each page is rendered as a high-quality image and embedded into a new PDF.
+    The resulting PDF has no text layer - just images of the pages.
+    Perfect for using with AI vision models (ChatGPT, Claude, Gemini).
+    
+    Returns:
+        (pdf_bytes, metadata)
+    """
+    source = _open_document(document_bytes, filetype)
+    clean_pdf = fitz.open()
+    page_count = len(source)
+    
+    # Use provided DPI or calculate based on page count
+    render_dpi = dpi or sanitize_dpi_for_page_count(page_count)
+    
+    try:
+        if page_count == 0:
+            raise ValueError(f"No pages found in {filetype.upper()} document.")
+
+        logger.info(
+            "Converting to image PDF: %s pages, dpi=%s, jpeg_quality=%s",
+            page_count, render_dpi, jpeg_quality,
+        )
+
+        for index in range(page_count):
+            if page_count >= 20 and index % 10 == 0:
+                logger.info("Convert progress: page %s/%s", index + 1, page_count)
+
+            # Render page to grayscale image
+            pix = source.load_page(index).get_pixmap(
+                dpi=render_dpi,
+                alpha=False,
+                colorspace=fitz.csGRAY,
+            )
+            
+            # Convert to JPEG
+            try:
+                jpeg = pix.tobytes("jpeg", jpg_quality=jpeg_quality)
+            except TypeError:
+                jpeg = pix.tobytes(output="jpeg", jpg_quality=jpeg_quality)
+            
+            # Add as page in new PDF
+            build_image_only_pdf_page(clean_pdf, pix, render_dpi, jpeg)
+            
+            del pix, jpeg
+            gc.collect()
+
+        # Get PDF bytes
+        pdf_bytes = clean_pdf.tobytes()
+        
+        meta = {
+            "pages": page_count,
+            "dpi": render_dpi,
+            "jpeg_quality": jpeg_quality,
+            "output_size_mb": round(len(pdf_bytes) / (1024 * 1024), 2),
+            "input_size_mb": round(len(document_bytes) / (1024 * 1024), 2),
+        }
+        
+        return pdf_bytes, meta
+        
+    finally:
+        source.close()
+        clean_pdf.close()

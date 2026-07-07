@@ -326,3 +326,25 @@ textarea:focus {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+.feature-hint {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    margin-top: 0.5rem;
+}
+
+#convert-pdf-btn {
+    background: #059669;
+    color: white;
+    border: none;
+}
+
+#convert-pdf-btn:hover:not(:disabled) {
+    background: #047857;
+}
+
+#convert-pdf-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
