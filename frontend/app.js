@@ -274,11 +274,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem('Pages processed', m.pages);
             }
             
-            addMetaItem('Method', m.method || 'Multi-pass OCR');
+            addMetaItem('Method', m.method || 'Adaptive OCR');
             addMetaItem('Processing', 'In your browser');
             
             if (m.device_profile) {
                 addMetaItem('Device mode', m.device_profile);
+            }
+            
+            if (m.workers) {
+                addMetaItem('Parallel workers', m.workers);
+            }
+            
+            if (m.fast_path_pages !== undefined && m.slow_path_pages !== undefined) {
+                addMetaItem('Fast path pages', `${m.fast_path_pages} (easy)`);
+                addMetaItem('Multi-pass pages', `${m.slow_path_pages} (needed extra processing)`);
             }
             
             if (m.render_scale) {
@@ -305,12 +314,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (m.preprocessing) {
                 const pp = m.preprocessing;
                 const features = [];
-                if (pp.contrast) features.push(`contrast ${pp.contrast}×`);
-                if (pp.sharpen) features.push(`sharpen ${pp.sharpen}×`);
                 if (pp.local_adaptive_threshold) features.push('local adaptive threshold');
                 if (pp.noise_reduction) features.push('noise reduction');
                 if (pp.morphological_cleanup) features.push('morphological cleanup');
-                if (pp.multi_pass) features.push('multi-pass (6 variants)');
+                if (pp.adaptive_multipass) features.push('adaptive multi-pass');
                 if (features.length) {
                     addMetaItem('Preprocessing', features.join(', '));
                 }
