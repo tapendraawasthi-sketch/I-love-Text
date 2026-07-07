@@ -1,7 +1,9 @@
 services:
   - type: web
-    name: nepaleconomy
-    runtime: node
-    buildCommand: npm install
-    startCommand: npx serve frontend/zipscan -l $PORT
+    name: i-love-text
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
     pullRequestPreviewsEnabled: false

@@ -1,10 +1,13 @@
 {
-  "name": "zipscan-pro",
+  "name": "i-love-text",
   "version": "1.0.0",
-  "description": "Advanced OCR ZIP Image Text Extractor",
+  "description": "Image-first Nepali OCR web app",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "echo 'Static site — no build needed'",
-    "start": "npx serve frontend/zipscan -l $PORT"
+    "build": "echo Static frontend only - use Docker for full OCR API",
+    "start": "serve frontend -l tcp://0.0.0.0:${PORT:-3000}"
   },
   "dependencies": {
     "serve": "^14.2.3"
