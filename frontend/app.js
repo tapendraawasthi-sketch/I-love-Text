@@ -26,6 +26,16 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentFile = null;
     const MAX_MB = 50;
 
+    function showDeviceProfile() {
+        const badge = document.getElementById('device-badge');
+        if (!badge || !window.TextExtractOCR?.getDeviceProfile) return;
+        const p = window.TextExtractOCR.getDeviceProfile();
+        badge.textContent = `${p.label} · ${p.cores} CPU cores · ${p.ramGb} GB RAM · ${p.maxWorkers} OCR workers`;
+        badge.classList.add(`tier-${p.tier}`);
+    }
+
+    showDeviceProfile();
+
     uploadZone.addEventListener('click', () => fileInput.click());
 
     uploadZone.addEventListener('dragover', (e) => {
@@ -159,7 +169,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (m.processed_locally) {
                 addMetaItem('Processing', 'In your browser (free, no server upload)');
             }
-            if (m.workers) addMetaItem('Parallel workers', m.workers);
+            if (m.device_profile) addMetaItem('Device mode', m.device_profile);
+            if (m.workers) addMetaItem('OCR workers', m.workers);
+            if (m.quality_retry) addMetaItem('Accuracy boost', 'On (weak pages re-scanned)');
             if (m.render_scale) addMetaItem('Render scale', m.render_scale + '×');
             if (m.method) addMetaItem('Method', m.method.replace(/_/g, ' '));
             if (m.mean_confidence) addMetaItem('OCR Confidence', `${m.mean_confidence}%`);
