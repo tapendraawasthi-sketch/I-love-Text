@@ -18,7 +18,7 @@ from typing import Any
 
 import fitz
 
-from app.legacy_fonts.converter import convert_legacy_text
+from app.legacy_fonts.converter import is_legacy_encoded, force_convert_legacy
 from app.legacy_fonts.mappings import is_legacy_font, get_npttf2utf_map_name
 from app.legacy_fonts.preeti_map import is_likely_preeti
 from app.nlp.font_detector import analyse_document_fonts, guess_font_from_text
@@ -29,6 +29,8 @@ logger = get_logger("DirectExtract")
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _DEVANAGARI_DIGIT_RE = re.compile(r"[०-९]")
 _GARBAGE_RE = re.compile(r"undefined|NaN|\[object", re.I)
+_GARBAGE_SYMBOL_RE = re.compile(r"[|=\[\]{}<>^~`\\]")
+_LONG_DEVANAGARI_RUN_RE = re.compile(r"[\u0900-\u097F]{22,}")
 
 
 def _devanagari_ratio(text: str) -> float:
@@ -132,6 +134,9 @@ def build_font_lookup(font_analysis: dict[str, Any]) -> dict[str, dict[str, Any]
 
 
 def _should_convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> bool:
+    # Never re-convert text that is already proper Unicode Devanagari.
+    if not is_legacy_encoded(raw_text):
+        return False
     if font_info and font_info.get("is_legacy"):
         return True
     if is_legacy_font(font_name):
@@ -146,17 +151,31 @@ def _convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | Non
     if not _should_convert_span(raw_text, font_name, font_info):
         return raw_text
 
+    primary_map = None
     if font_info and font_info.get("conversion_map"):
-        return convert_legacy_text(raw_text, font_info["conversion_map"])
+        primary_map = font_info["conversion_map"]
+    elif is_legacy_font(font_name):
+        primary_map = get_npttf2utf_map_name(font_name)
+    else:
+        guess = guess_font_from_text(raw_text)
+        if guess["family"] not in ("unicode", "unknown"):
+            primary_map = guess["family"]
 
-    if is_legacy_font(font_name):
-        return convert_legacy_text(raw_text, font_name)
+    maps_to_try: list[str] = []
+    for m in (primary_map, "preeti", "kantipur", "sagarmatha"):
+        if m and m not in maps_to_try:
+            maps_to_try.append(m)
 
-    guess = guess_font_from_text(raw_text)
-    if guess["family"] not in ("unicode", "unknown"):
-        return convert_legacy_text(raw_text, guess["family"])
+    best = raw_text
+    best_score = score_text_quality(raw_text)["score"]
+    for map_name in maps_to_try:
+        converted = force_convert_legacy(raw_text, map_name)
+        converted_score = score_text_quality(converted)["score"]
+        if converted_score > best_score:
+            best = converted
+            best_score = converted_score
 
-    return convert_legacy_text(raw_text, "preeti")
+    return best
 
 
 def score_text_quality(text: str) -> dict[str, Any]:
@@ -172,18 +191,32 @@ def score_text_quality(text: str) -> dict[str, Any]:
     ascii_letters = sum(1 for c in chars if c.isascii() and c.isalpha())
     ascii_ratio = ascii_letters / len(chars)
 
-    # Penalise leftover legacy ASCII encoding and garbage markers
     penalty = 0.0
     if _GARBAGE_RE.search(text):
         penalty += 40.0
-    if ascii_ratio > 0.25 and deva_ratio < 0.35:
+
+    symbol_hits = len(_GARBAGE_SYMBOL_RE.findall(text))
+    penalty += min(30.0, symbol_hits * 2.0)
+
+    long_runs = len(_LONG_DEVANAGARI_RUN_RE.findall(text))
+    penalty += long_runs * 8.0
+
+    words = _DEVANAGARI_RE.findall(text)
+    if len(words) >= 5:
+        counts = {}
+        for w in words:
+            counts[w] = counts.get(w, 0) + 1
+        dominant = max(counts.values()) / len(words)
+        if dominant > 0.18:
+            penalty += 25.0
+
+    if ascii_ratio > 0.20 and deva_ratio < 0.40:
         penalty += 25.0
 
-    # Reward clean Devanagari output
     score = deva_ratio * 100.0 - penalty
-    if deva_ratio >= 0.45:
+    if deva_ratio >= 0.45 and penalty < 10:
         quality = "excellent"
-    elif deva_ratio >= 0.25:
+    elif deva_ratio >= 0.25 and penalty < 20:
         quality = "good"
     elif deva_ratio >= 0.10:
         quality = "partial"
@@ -195,6 +228,7 @@ def score_text_quality(text: str) -> dict[str, Any]:
         "devanagari_ratio": round(deva_ratio * 100, 1),
         "ascii_ratio": round(ascii_ratio * 100, 1),
         "quality": quality,
+        "penalty": round(penalty, 1),
     }
 
 
@@ -303,17 +337,19 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
         list(legacy_fonts)[0] if legacy_fonts else ""
     )
     
-    # Confidence based on validation
-    if validation["quality"] == "good":
-        confidence = 98.0 if has_legacy else 100.0
-    elif validation["quality"] == "low_devanagari":
+    quality = score_text_quality(final_text)
+
+    # Confidence reflects actual output quality, not just font detection.
+    if quality["score"] >= 75:
+        confidence = min(100.0, quality["score"])
+    elif quality["score"] >= 50:
+        confidence = quality["score"]
+    elif validation["quality"] == "good":
         confidence = 70.0
     else:
-        confidence = 50.0
-    
-    method = "direct_legacy" if has_legacy else "direct_unicode"
+        confidence = max(30.0, quality["score"])
 
-    quality = score_text_quality(final_text)
+    method = "direct_legacy" if has_legacy else "direct_unicode"
 
     return {
         "text": final_text,
@@ -327,6 +363,11 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
         "validation": validation,
         "quality": quality,
     }
+
+
+def _extract_page_raw(page: fitz.Page) -> str:
+    """Plain text extraction with no font conversion."""
+    return page.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE).strip()
 
 
 def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
@@ -354,8 +395,30 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
         doc.close()
 
     page_texts = [r["text"] for r in page_results if r.get("text", "").strip()]
-    final_text = "\n\n".join(page_texts)
-    final_text = _fix_common_errors(final_text)
+    converted_text = _fix_common_errors("\n\n".join(page_texts))
+
+    # Also try raw passthrough — best for PDFs that already store Unicode text.
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        raw_pages = [_extract_page_raw(doc.load_page(i)) for i in range(len(doc))]
+        doc.close()
+        raw_text = _fix_common_errors("\n\n".join(p for p in raw_pages if p.strip()))
+    except Exception:
+        raw_text = ""
+
+    converted_score = score_text_quality(converted_text)["score"]
+    raw_score = score_text_quality(raw_text)["score"] if raw_text else 0.0
+
+    if raw_score > converted_score + 3.0:
+        logger.info(
+            "Raw Unicode passthrough scores higher (%.1f vs %.1f) — using unconverted text.",
+            raw_score, converted_score,
+        )
+        final_text = raw_text
+        method = "unicode_passthrough"
+    else:
+        final_text = converted_text
+        method = "direct_font_conversion"
 
     confidences = [r.get("confidence", 0.0) for r in page_results if r.get("text")]
     mean_confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0
@@ -371,7 +434,7 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
         "confidence": mean_confidence,
         "quality": quality,
         "no_text_pages": no_text_pages,
-        "method": "direct_font_conversion",
+        "method": method,
     }
 
 

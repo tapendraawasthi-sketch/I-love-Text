@@ -1,6 +1,6 @@
 import pytest
 from app.legacy_fonts.mappings import is_legacy_font, get_npttf2utf_map_name
-from app.legacy_fonts.converter import convert_legacy_text
+from app.legacy_fonts.converter import convert_legacy_text, is_legacy_encoded
 
 
 def test_is_legacy_font():
@@ -42,3 +42,14 @@ def test_preeti_conversion():
 def test_empty_text():
     assert convert_legacy_text("", "Preeti") == ""
     assert convert_legacy_text("   ", "Preeti") == "   "
+
+
+def test_unicode_passthrough_not_reconverted():
+    unicode_text = "नेपाल सरकारको मन्त्रिपरिषद्ले यो ऐन बनाएको छ।"
+    assert is_legacy_encoded(unicode_text) is False
+    assert convert_legacy_text(unicode_text, "Preeti") == unicode_text
+
+
+def test_legacy_encoded_detected():
+    preeti_text = "g]kfn ;'ljwf"
+    assert is_legacy_encoded(preeti_text) is True

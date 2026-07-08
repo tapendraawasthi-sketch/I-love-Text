@@ -7,7 +7,7 @@ from functools import lru_cache
 import logging
 
 from app.legacy_fonts.mappings import is_legacy_font, get_npttf2utf_map_name
-from app.legacy_fonts.preeti_map import preeti_to_unicode, conversion_quality
+from app.legacy_fonts.preeti_map import preeti_to_unicode, conversion_quality, is_likely_preeti
 
 logger = logging.getLogger("LegacyFontConverter")
 
@@ -62,6 +62,50 @@ def _convert_with_builtin(text: str) -> str:
     return result
 
 
+def is_legacy_encoded(text: str) -> bool:
+    """
+    Return True when text looks like legacy font encoding (Preeti/Kantipur ASCII),
+    False when it is already Unicode Devanagari and should NOT be re-converted.
+    """
+    if not text or not text.strip():
+        return False
+
+    chars = [c for c in text if c.strip()]
+    if not chars:
+        return False
+
+    devanagari = sum(1 for c in chars if "\u0900" <= c <= "\u097F")
+    ascii_letters = sum(1 for c in chars if c.isascii() and c.isalpha())
+    deva_ratio = devanagari / len(chars)
+    ascii_ratio = ascii_letters / len(chars)
+
+    # Already proper Unicode — converting again produces garbage.
+    if deva_ratio >= 0.50 and ascii_ratio < 0.15:
+        return False
+
+    if is_likely_preeti(text):
+        return True
+
+    # ASCII-heavy spans in a legacy-font PDF need conversion.
+    return ascii_ratio >= 0.20 and deva_ratio < 0.40
+
+
+def force_convert_legacy(text: str, map_name: str) -> str:
+    """Convert using a specific npttf2utf map, regardless of font name."""
+    if not text or not text.strip():
+        return text
+
+    if _HAS_NPTTF2UTF:
+        result = _convert_with_npttf2utf(text, map_name)
+        if result:
+            return result
+
+    # Built-in mapping is Preeti-only; use for preeti-like maps.
+    if map_name in ("preeti", "kantipur", "sagarmatha", "himali", "aakriti", "pcsnepali"):
+        return _convert_with_builtin(text)
+    return text
+
+
 def convert_legacy_text(text: str, font_name: str) -> str:
     """
     Converts legacy-font-encoded text to proper Unicode Devanagari.
@@ -78,20 +122,14 @@ def convert_legacy_text(text: str, font_name: str) -> str:
     if not text or not text.strip():
         return text
 
+    if not is_legacy_encoded(text):
+        return text
+
     if not is_legacy_font(font_name):
         return text
 
     map_name = get_npttf2utf_map_name(font_name)
-    
-    # Try npttf2utf first
-    if _HAS_NPTTF2UTF:
-        result = _convert_with_npttf2utf(text, map_name)
-        if result:
-            return result
-        logger.info(f"npttf2utf failed for {font_name}, using built-in converter")
-    
-    # Fallback to built-in Preeti converter
-    return _convert_with_builtin(text)
+    return force_convert_legacy(text, map_name)
 
 
 def smart_convert(text: str, font_name: str) -> str:
