@@ -1,0 +1,14 @@
+# Add these to app/config.py if not already present:
+
+# LLM Configuration
+FAST_MODEL = os.getenv("FAST_MODEL", "mistral")  # or "neural-chat", "orca-mini", etc.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+REGEX_CONFIDENCE_THRESHOLD = float(os.getenv("REGEX_CONFIDENCE_THRESHOLD", "0.75"))
+FAST_MODEL_OPTIONS = {
+    "temperature": 0.3,
+    "top_p": 0.9,
+}
+
+# OCR LLM Enhancement
+ENABLE_LLM_OCR_ENHANCEMENT = os.getenv("ENABLE_LLM_OCR_ENHANCEMENT", "true").lower() == "true"
+OCR_LLM_CONFIDENCE_THRESHOLD = float(os.getenv("OCR_LLM_CONFIDENCE_THRESHOLD", "0.75"))
