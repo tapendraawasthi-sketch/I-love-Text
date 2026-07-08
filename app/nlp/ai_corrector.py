@@ -29,6 +29,11 @@ from langchain_ollama import ChatOllama
 from app.legacy_fonts.converter import convert_legacy_text
 from app.legacy_fonts.mappings import is_legacy_font
 from app.nlp.font_detector import analyse_document_fonts
+from app.nlp.nepali_sentence_intelligence import (
+    analyze_sentence_meaning,
+    repair_corrupted_devanagari,
+    synthesize_sentence_context,
+)
 from app.logging_config import get_logger
 
 logger = get_logger("AICorrector")
@@ -63,19 +68,25 @@ The input text has ALREADY been mechanically converted but may still have:
 
 YOUR TASK:
   1. Read each sentence and FULLY UNDERSTAND its MEANING in context.
-  2. Fix every character that breaks the meaning — not just obvious typos.
-  3. Common patterns to watch and fix:
+  2. Use NEPALI SENTENCE CONTEXT (clause roles, legal domain, repaired OCR hints)
+     when provided — infer meaning from sentence structure, not corrupted glyphs.
+  3. Fix every character that breaks the meaning — not just obvious typos.
+  4. Common patterns to watch and fix:
        "ढ्ो"  →  "ने"       "ठ"    →  "त" (context-dependent)
        "प्ाठ" →  "पाठ"     "ड"    →  "ड" or "ड" check context
        "ि" before consonant instead of after → reorder
-  4. Output ONLY the corrected Nepali/English text.
-  5. Keep paragraph and line structure exactly as in the input.
-  6. Do NOT translate, summarise, or add any commentary.
-  7. Do NOT add markdown, bullets, or headings not present in input.
+       Legal docs: "नियमवाली", "राजपत्र", "मिति", "संक्षिप्त नाम", "दफा"
+  5. Output ONLY the corrected Nepali/English text.
+  6. Keep paragraph and line structure exactly as in the input.
+  7. Do NOT translate, summarise, or add any commentary.
+  8. Do NOT add markdown, bullets, or headings not present in input.
 """
 
 _ACTOR_USER = """\
 DOCUMENT CONTEXT: {context}
+
+SENTENCE MEANING CONTEXT:
+{sentence_context}
 
 FONT USED: {font_family} (legacy encoding mechanically converted to Unicode)
 
@@ -114,6 +125,9 @@ If all sentences are correct and meaningful, respond:
 _CRITIC_USER = """\
 Review the following corrected text. Identify any sentence that still has
 wrong characters, broken meaning, or is not proper Nepali/English.
+
+SENTENCE MEANING CONTEXT (what each clause should mean):
+{sentence_context}
 
 TEXT TO REVIEW:
 ---
@@ -257,10 +271,12 @@ def _actor_correct(
     llm: ChatOllama,
     doc_context: str,
     font_family: str,
+    sentence_context: str = "",
 ) -> str:
     """Run the Actor: deeply correct one chunk of converted text."""
     prompt = _ACTOR_USER.format(
         context=doc_context,
+        sentence_context=sentence_context or "(none)",
         font_family=font_family,
         chunk=chunk,
     )
@@ -275,13 +291,16 @@ def _actor_correct(
         return chunk
 
 
-def _critic_review(text: str, llm: ChatOllama) -> list[dict]:
+def _critic_review(text: str, llm: ChatOllama, sentence_context: str = "") -> list[dict]:
     """
     Run the Critic: review corrected text, return list of issue dicts.
     Each issue: {sentence, problem, suggested_fix}
     Returns [] if everything is correct.
     """
-    prompt = _CRITIC_USER.format(text=text)
+    prompt = _CRITIC_USER.format(
+        text=text,
+        sentence_context=sentence_context or "(none)",
+    )
     try:
         resp = llm.invoke([
             {"role": "system", "content": _CRITIC_SYSTEM},
@@ -361,12 +380,14 @@ def _critic_actor_loop(
 
     Returns (final_text, iterations_run).
     """
+    sentence_context = synthesize_sentence_context(chunk)
+
     # ── Actor: initial correction ───────────────────────────────────────────
-    current = _actor_correct(chunk, llm, doc_context, font_family)
+    current = _actor_correct(chunk, llm, doc_context, font_family, sentence_context)
 
     for iteration in range(1, max_iter + 1):
         # ── Critic: review ──────────────────────────────────────────────────
-        issues = _critic_review(current, llm)
+        issues = _critic_review(current, llm, sentence_context)
 
         if not issues:
             logger.info("Critic satisfied after %d iteration(s).", iteration)
@@ -433,6 +454,8 @@ def process_pdf_smart(pdf_bytes: bytes, model_name: str = _DEFAULT_MODEL) -> dic
 
     raw_unicode = "\n\n".join(pt for pt in page_texts if pt.strip())
     raw_unicode = _cleanup(raw_unicode)
+    if re.search(r"[\u0900-\u097F]", raw_unicode):
+        raw_unicode = repair_corrupted_devanagari(raw_unicode)
 
     if not raw_unicode.strip():
         return {
@@ -446,6 +469,9 @@ def process_pdf_smart(pdf_bytes: bytes, model_name: str = _DEFAULT_MODEL) -> dic
 
     # ── Step 3: Document context detection ─────────────────────────────────
     doc_context = _detect_document_type(raw_unicode)
+    meaning = analyze_sentence_meaning(raw_unicode[:2000])
+    if meaning.summary_english:
+        doc_context = f"{doc_context}; {meaning.summary_english}"
     logger.info("Document context detected: %s", doc_context)
 
     # ── Step 4: Critic-Actor correction loop ────────────────────────────────
