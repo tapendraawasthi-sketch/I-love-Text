@@ -247,6 +247,103 @@ async def classify_intent_api(text: str = Form(...)):
     }
 
 
+@app.post("/api/detect-fonts")
+async def detect_fonts_api(
+    file: UploadFile = File(...),
+):
+    """
+    Analyse a PDF and report which fonts are used (Preeti, Kantipur,
+    Sagarmatha, Unicode, etc.) along with a recommended conversion strategy.
+    """
+    filename = file.filename or "unknown.pdf"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext != ".pdf":
+        raise ValueError("Only PDF files are supported.")
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    try:
+        from app.nlp.font_detector import analyse_document_fonts
+        result = await run_in_threadpool(analyse_document_fonts, file_bytes)
+    except Exception as e:
+        logger.error(f"Font detection error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "detail": "Font detection failed", "error": str(e)},
+        )
+
+    return {"success": True, "filename": filename, **result}
+
+
+@app.post("/api/extract/smart-txt")
+async def extract_pdf_smart_txt_api(
+    file: UploadFile = File(...),
+    model: str = Form("llama3"),
+):
+    """
+    Font-aware AI PDF → TXT pipeline (no traditional OCR).
+
+    Step 1 — Detect every font in the PDF (Preeti, Kantipur, Sagarmatha,
+              Himali, Aakriti, PCS Nepali, Unicode, etc.).
+    Step 2 — Convert each text span using the correct encoding map so
+              raw ASCII Devanagari becomes proper Unicode characters.
+    Step 3 — Pass the converted text to a local LLM (Ollama) which
+              understands the meaning, fixes spelling/grammar errors and
+              conversion artefacts, and outputs clean, semantically-correct
+              Unicode text.
+
+    Returns the corrected text as a downloadable .txt file.
+    """
+    filename = file.filename or "unknown.pdf"
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext != ".pdf":
+        raise ValueError("Only PDF files are supported for this endpoint.")
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    logger.info(f"Smart-TXT pipeline: {filename} ({size_mb:.2f}MB), model={model}")
+
+    try:
+        from app.nlp.ai_corrector import process_pdf_smart
+        result = await run_in_threadpool(process_pdf_smart, file_bytes, model)
+    except MemoryError:
+        return JSONResponse(
+            status_code=507,
+            content={"success": False, "detail": "Out of memory. Try a smaller PDF."},
+        )
+    except Exception as e:
+        logger.error(f"Smart-TXT pipeline error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "detail": "Pipeline failed", "error": str(e)},
+        )
+
+    base_name = os.path.splitext(filename)[0]
+    output_filename = f"{base_name}_ai_corrected.txt"
+
+    font_summary = result["font_analysis"].get("summary", "")
+    logger.info(f"Smart-TXT complete — {font_summary}")
+
+    return Response(
+        content=result["text"].encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": attachment_disposition(output_filename),
+            "X-Pages": str(result["pages"]),
+            "X-Font-Strategy": result["font_analysis"].get("strategy", "unknown"),
+            "X-Dominant-Font": result["font_analysis"].get("dominant_family", "unknown"),
+            "X-AI-Applied": str(result["ai_applied"]).lower(),
+        },
+    )
+
+
 # Mount frontend last
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 if os.path.exists(frontend_dir):
