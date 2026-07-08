@@ -17,6 +17,7 @@ from app.extract.docx_handler import extract_docx
 from app.extract.image_handler import extract_image
 from app.extract.raster_pipeline import convert_to_image_pdf
 from app.logging_config import get_logger
+from app.nlp.intent_classifier import classify
 
 logger = get_logger("TextExtract")
 
@@ -225,6 +226,25 @@ async def convert_to_image_pdf_api(
             "X-Output-Size-MB": str(meta["output_size_mb"]),
         },
     )
+
+
+@app.post("/api/classify")
+async def classify_intent_api(text: str = Form(...)):
+    """
+    Classify the intent of a given text string using ERP intelligence.
+    """
+    if not text or not text.strip():
+        raise ValueError("Text cannot be empty.")
+        
+    intent = classify(text)
+    
+    logger.info(f"Classified intent: '{intent}' for text: '{text[:50]}...'")
+    
+    return {
+        "success": True,
+        "text": text,
+        "intent": intent
+    }
 
 
 # Mount frontend last
