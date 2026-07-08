@@ -5,17 +5,23 @@ NO IMAGE OCR - reads the PDF text layer directly.
 Converts legacy fonts (Preeti, Kantipur) to Unicode with npttf2utf.
 Validates and fixes common conversion errors.
 
+For PDFs with an embedded text layer this is more accurate than OCR because
+characters are read from the document, not guessed from pixels.
+
 Target: 95-100% accuracy on digital PDFs.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 import fitz
 
 from app.legacy_fonts.converter import convert_legacy_text
 from app.legacy_fonts.mappings import is_legacy_font, get_npttf2utf_map_name
+from app.legacy_fonts.preeti_map import is_likely_preeti
+from app.nlp.font_detector import analyse_document_fonts, guess_font_from_text
 from app.logging_config import get_logger
 
 logger = get_logger("DirectExtract")
@@ -33,11 +39,21 @@ def _devanagari_ratio(text: str) -> float:
     return sum(1 for c in chars if _DEVANAGARI_RE.match(c)) / len(chars)
 
 
+def _normalize_unicode(text: str) -> str:
+    if not text:
+        return text
+    text = unicodedata.normalize("NFC", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
+
 def _fix_common_errors(text: str) -> str:
     """Fix common conversion errors and normalize text."""
     if not text:
         return text
-    
+
+    text = _normalize_unicode(text)
+
     # Fix common Preeti conversion issues
     fixes = [
         # Double matras
@@ -57,6 +73,8 @@ def _fix_common_errors(text: str) -> str:
         (r"्$", ""),
         # Common character confusions in Preeti
         (r"।।", "।"),
+        # Matra before consonant → after consonant
+        (r"ि([क-ह])", r"\1ि"),
         # Normalize spaces
         (r"[ \t]+", " "),
         (r"\n{3,}", "\n\n"),
@@ -105,7 +123,82 @@ def _validate_conversion(original: str, converted: str, font_name: str) -> dict[
     }
 
 
-def extract_page_direct(page: fitz.Page) -> dict[str, Any]:
+def build_font_lookup(font_analysis: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Map raw PDF font names to conversion strategy from font analysis."""
+    lookup: dict[str, dict[str, Any]] = {}
+    for font in font_analysis.get("fonts_found", []):
+        lookup[font["raw_name"]] = font
+    return lookup
+
+
+def _should_convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> bool:
+    if font_info and font_info.get("is_legacy"):
+        return True
+    if is_legacy_font(font_name):
+        return True
+    if is_likely_preeti(raw_text):
+        return True
+    guess = guess_font_from_text(raw_text)
+    return guess["family"] not in ("unicode", "unknown") and guess["confidence"] >= 40
+
+
+def _convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> str:
+    if not _should_convert_span(raw_text, font_name, font_info):
+        return raw_text
+
+    if font_info and font_info.get("conversion_map"):
+        return convert_legacy_text(raw_text, font_info["conversion_map"])
+
+    if is_legacy_font(font_name):
+        return convert_legacy_text(raw_text, font_name)
+
+    guess = guess_font_from_text(raw_text)
+    if guess["family"] not in ("unicode", "unknown"):
+        return convert_legacy_text(raw_text, guess["family"])
+
+    return convert_legacy_text(raw_text, "preeti")
+
+
+def score_text_quality(text: str) -> dict[str, Any]:
+    """Score converted text — higher is better. Used to pick best output path."""
+    if not text or not text.strip():
+        return {"score": 0.0, "devanagari_ratio": 0.0, "quality": "empty"}
+
+    chars = [c for c in text if c.strip()]
+    if not chars:
+        return {"score": 0.0, "devanagari_ratio": 0.0, "quality": "empty"}
+
+    deva_ratio = sum(1 for c in chars if _DEVANAGARI_RE.match(c)) / len(chars)
+    ascii_letters = sum(1 for c in chars if c.isascii() and c.isalpha())
+    ascii_ratio = ascii_letters / len(chars)
+
+    # Penalise leftover legacy ASCII encoding and garbage markers
+    penalty = 0.0
+    if _GARBAGE_RE.search(text):
+        penalty += 40.0
+    if ascii_ratio > 0.25 and deva_ratio < 0.35:
+        penalty += 25.0
+
+    # Reward clean Devanagari output
+    score = deva_ratio * 100.0 - penalty
+    if deva_ratio >= 0.45:
+        quality = "excellent"
+    elif deva_ratio >= 0.25:
+        quality = "good"
+    elif deva_ratio >= 0.10:
+        quality = "partial"
+    else:
+        quality = "poor"
+
+    return {
+        "score": round(max(0.0, score), 1),
+        "devanagari_ratio": round(deva_ratio * 100, 1),
+        "ascii_ratio": round(ascii_ratio * 100, 1),
+        "quality": quality,
+    }
+
+
+def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """
     Extract text directly from PDF page with font-aware conversion.
     
@@ -146,11 +239,11 @@ def extract_page_direct(page: fitz.Page) -> dict[str, Any]:
                 
                 detected_fonts.add(font_name)
                 total_chars += len(raw_text)
-                
-                # Convert if legacy font
-                if is_legacy_font(font_name):
+
+                font_info = (font_lookup or {}).get(font_name)
+                if _should_convert_span(raw_text, font_name, font_info):
                     legacy_fonts.add(font_name)
-                    converted_text = convert_legacy_text(raw_text, font_name)
+                    converted_text = _convert_span(raw_text, font_name, font_info)
                     converted_chars += len(raw_text)
                 else:
                     converted_text = raw_text
@@ -219,7 +312,9 @@ def extract_page_direct(page: fitz.Page) -> dict[str, Any]:
         confidence = 50.0
     
     method = "direct_legacy" if has_legacy else "direct_unicode"
-    
+
+    quality = score_text_quality(final_text)
+
     return {
         "text": final_text,
         "method": method,
@@ -230,12 +325,60 @@ def extract_page_direct(page: fitz.Page) -> dict[str, Any]:
         "legacy_fonts": list(legacy_fonts),
         "converted_ratio": round(converted_chars / max(total_chars, 1) * 100, 1),
         "validation": validation,
+        "quality": quality,
+    }
+
+
+def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
+    """
+    Highest-accuracy path for PDFs with embedded text layers.
+
+    1. Analyse every font in the document
+    2. Extract text spans and convert each with the correct encoding map
+    3. Apply rule-based Unicode cleanup (no LLM, no OCR)
+  """
+    font_analysis = analyse_document_fonts(pdf_bytes)
+    font_lookup = build_font_lookup(font_analysis)
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise ValueError(f"Cannot open PDF: {exc}") from exc
+
+    page_results: list[dict[str, Any]] = []
+    try:
+        for idx in range(len(doc)):
+            page = doc.load_page(idx)
+            page_results.append(extract_page_direct(page, font_lookup))
+    finally:
+        doc.close()
+
+    page_texts = [r["text"] for r in page_results if r.get("text", "").strip()]
+    final_text = "\n\n".join(page_texts)
+    final_text = _fix_common_errors(final_text)
+
+    confidences = [r.get("confidence", 0.0) for r in page_results if r.get("text")]
+    mean_confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0
+    quality = score_text_quality(final_text)
+
+    no_text_pages = sum(1 for r in page_results if r.get("method") == "no_text")
+
+    return {
+        "text": final_text or "[No text layer found in PDF.]",
+        "font_analysis": font_analysis,
+        "pages": len(page_results),
+        "page_results": page_results,
+        "confidence": mean_confidence,
+        "quality": quality,
+        "no_text_pages": no_text_pages,
+        "method": "direct_font_conversion",
     }
 
 
 def extract_document_direct(
     document_bytes: bytes,
     filetype: str = "pdf",
+    font_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Extract text from entire document using direct text layer extraction.
@@ -257,7 +400,7 @@ def extract_document_direct(
     try:
         for idx in range(page_count):
             page = doc.load_page(idx)
-            result = extract_page_direct(page)
+            result = extract_page_direct(page, font_lookup)
             results.append(result)
             methods.append(result["method"])
             all_fonts.update(result.get("fonts", []))

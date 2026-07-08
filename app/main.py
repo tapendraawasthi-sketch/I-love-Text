@@ -282,20 +282,17 @@ async def detect_fonts_api(
 async def extract_pdf_smart_txt_api(
     file: UploadFile = File(...),
     model: str = Form("llama3"),
+    use_ai: bool = Form(False),
 ):
     """
-    Font-aware AI PDF → TXT pipeline (no traditional OCR).
+    High-accuracy font-aware PDF → TXT (no OCR).
 
-    Step 1 — Detect every font in the PDF (Preeti, Kantipur, Sagarmatha,
-              Himali, Aakriti, PCS Nepali, Unicode, etc.).
-    Step 2 — Convert each text span using the correct encoding map so
-              raw ASCII Devanagari becomes proper Unicode characters.
-    Step 3 — Pass the converted text to a local LLM (Ollama) which
-              understands the meaning, fixes spelling/grammar errors and
-              conversion artefacts, and outputs clean, semantically-correct
-              Unicode text.
+    Reads the PDF text layer directly and converts legacy Nepali fonts
+    (Preeti, Kantipur, Sagarmatha, etc.) to proper Unicode. This is more
+    accurate than OCR for PDFs that already contain embedded text.
 
-    Returns the corrected text as a downloadable .txt file.
+    Optional AI refinement is off by default and only runs when use_ai=true
+    and ENABLE_LLM_OCR_ENHANCEMENT is enabled in the environment.
     """
     filename = file.filename or "unknown.pdf"
     ext = os.path.splitext(filename)[1].lower()
@@ -308,11 +305,15 @@ async def extract_pdf_smart_txt_api(
     if size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
 
-    logger.info(f"Smart-TXT pipeline: {filename} ({size_mb:.2f}MB), model={model}")
+    logger.info(
+        f"Smart-TXT pipeline: {filename} ({size_mb:.2f}MB), model={model}, use_ai={use_ai}"
+    )
 
     try:
         from app.nlp.ai_corrector import process_pdf_smart
-        result = await run_in_threadpool(process_pdf_smart, file_bytes, model)
+        result = await run_in_threadpool(
+            process_pdf_smart, file_bytes, model, use_ai=use_ai
+        )
     except MemoryError:
         return JSONResponse(
             status_code=507,
@@ -326,22 +327,29 @@ async def extract_pdf_smart_txt_api(
         )
 
     base_name = os.path.splitext(filename)[0]
-    output_filename = f"{base_name}_ai_corrected.txt"
+    output_filename = f"{base_name}_unicode.txt"
 
     font_summary = result["font_analysis"].get("summary", "")
     logger.info(f"Smart-TXT complete — {font_summary}")
 
+    headers = {
+        "Content-Disposition": attachment_disposition(output_filename),
+        "X-Pages": str(result["pages"]),
+        "X-Font-Strategy": result["font_analysis"].get("strategy", "unknown"),
+        "X-Dominant-Font": result["font_analysis"].get("dominant_family", "unknown"),
+        "X-AI-Applied": str(result["ai_applied"]).lower(),
+        "X-AI-Iterations": str(result.get("iterations", 0)),
+        "X-Confidence": str(result.get("confidence", 0)),
+        "X-Quality-Score": str(result.get("quality", {}).get("score", 0)),
+        "X-Method": result.get("method", "direct_font_conversion"),
+    }
+    if result.get("ai_skipped_reason"):
+        headers["X-AI-Skipped-Reason"] = result["ai_skipped_reason"]
+
     return Response(
         content=result["text"].encode("utf-8"),
         media_type="text/plain; charset=utf-8",
-        headers={
-            "Content-Disposition": attachment_disposition(output_filename),
-            "X-Pages": str(result["pages"]),
-            "X-Font-Strategy": result["font_analysis"].get("strategy", "unknown"),
-            "X-Dominant-Font": result["font_analysis"].get("dominant_family", "unknown"),
-            "X-AI-Applied": str(result["ai_applied"]).lower(),
-            "X-AI-Iterations": str(result.get("iterations", 0)),
-        },
+        headers=headers,
     )
 
 

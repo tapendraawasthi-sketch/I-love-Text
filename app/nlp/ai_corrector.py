@@ -1,529 +1,306 @@
 """
-Font-aware AI language understanding and Unicode conversion pipeline.
+Font-aware PDF → Unicode text pipeline.
 
-Pipeline per document:
-  1. Font Detection    — identify every font (Preeti/Kantipur/Sagarmatha/etc.)
-  2. Raw Conversion    — convert each text span using the correct npttf2utf map
-  3. Actor Pass        — LLM corrects the full text with deep domain context
-  4. Critic Pass       — LLM reviews sentence-by-sentence, flags broken ones
-  5. Targeted Fix Pass — LLM re-corrects ONLY flagged sentences with extra hints
-  6. Repeat 4-5        — up to MAX_ITERATIONS until all sentences pass review
-  7. Output            — semantically verified, clean Unicode .txt
+Primary path (default, highest accuracy):
+  1. Font detection — identify Preeti/Kantipur/Sagarmatha/Unicode per span
+  2. Direct extraction — read PDF text layer (no OCR)
+  3. Mechanical conversion — npttf2utf + rule-based Unicode cleanup
+  4. Rule-based Devanagari repair for legal/government text patterns
 
-The Critic-Actor loop ensures every sentence makes contextual sense before
-the text is accepted as final output.
-
-Supports: Preeti, Kantipur, e-Kantipur, Sagarmatha, Himali, Aakriti,
-          PCS Nepali, Siddhi, Kanchan, Navjeevan, Fontasy Himali,
-          Vishwash, Ganesh/Ganess, and any standard Unicode Devanagari font.
+Optional AI refinement (off by default):
+  Only runs when explicitly requested AND Ollama is available AND the
+  mechanical output quality is low. AI output is accepted only if it scores
+  higher than the mechanical conversion — otherwise mechanical text is kept.
 """
 from __future__ import annotations
 
-import json
+import os
 import re
+from collections import Counter
 from typing import Any
 
-import fitz
 from langchain_ollama import ChatOllama
 
-from app.legacy_fonts.converter import convert_legacy_text
-from app.legacy_fonts.mappings import is_legacy_font
-from app.nlp.font_detector import analyse_document_fonts
-from app.nlp.nepali_sentence_intelligence import (
-    analyze_sentence_meaning,
-    repair_corrupted_devanagari,
-    synthesize_sentence_context,
-)
+from app.extract.direct_extract import extract_document_high_accuracy, score_text_quality
+from app.nlp.nepali_sentence_intelligence import repair_corrupted_devanagari
 from app.logging_config import get_logger
 
 logger = get_logger("AICorrector")
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+_DEFAULT_MODEL = "llama3"
+_CHUNK_SIZE = 1200
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]+")
 
-_DEFAULT_MODEL   = "llama3"
-_CHUNK_SIZE      = 1500   # characters per LLM call (safe for 4k context)
-_MAX_ITERATIONS  = 3      # max Critic-Actor rounds per chunk
+# Mechanical quality below this → optional AI may be attempted
+_AI_QUALITY_THRESHOLD = 55.0
 
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-# ── Actor prompt ─────────────────────────────────────────────────────────────
 _ACTOR_SYSTEM = """\
-You are an expert in Nepali and English language, Nepali law, government documents,
-and Devanagari Unicode text. You specialise in recovering text that was mechanically
-converted from legacy Nepali fonts (Preeti, Kantipur, Sagarmatha, Himali, Aakriti,
-PCS Nepali, etc.) to Unicode.
+You are an expert in Nepali Unicode text repair. The input was mechanically
+converted from a legacy Nepali font (Preeti, Kantipur, etc.) to Unicode.
 
-The input text has ALREADY been mechanically converted but may still have:
-  • Wrong Devanagari characters that look visually similar but are incorrect
-    e.g. "ढ्ो" instead of "ने", "ठ" instead of "त", garbled conjuncts
-  • Split or merged words caused by bad font-span boundaries
-  • Wrong matras (vowel signs) attached to wrong consonants
-  • Missing or extra anusvara (ं), chandrabindu (ँ), visarga (ः), halant (्)
-  • Numbers / dates that are correct — do NOT change them
-  • Mixed Nepali-English content — preserve both
-
-YOUR TASK:
-  1. Read each sentence and FULLY UNDERSTAND its MEANING in context.
-  2. Use NEPALI SENTENCE CONTEXT (clause roles, legal domain, repaired OCR hints)
-     when provided — infer meaning from sentence structure, not corrupted glyphs.
-  3. Fix every character that breaks the meaning — not just obvious typos.
-  4. Common patterns to watch and fix:
-       "ढ्ो"  →  "ने"       "ठ"    →  "त" (context-dependent)
-       "प्ाठ" →  "पाठ"     "ड"    →  "ड" or "ड" check context
-       "ि" before consonant instead of after → reorder
-       Legal docs: "नियमवाली", "राजपत्र", "मिति", "संक्षिप्त नाम", "दफा"
-  5. Output ONLY the corrected Nepali/English text.
-  6. Keep paragraph and line structure exactly as in the input.
-  7. Do NOT translate, summarise, or add any commentary.
-  8. Do NOT add markdown, bullets, or headings not present in input.
-"""
+Fix ONLY obvious character errors (wrong matras, broken conjuncts, split words).
+Do NOT add, remove, summarise, or repeat content.
+Keep paragraph structure exactly as in the input.
+Output ONLY the corrected text — no commentary."""
 
 _ACTOR_USER = """\
-DOCUMENT CONTEXT: {context}
+DOCUMENT TYPE: {context}
 
-SENTENCE MEANING CONTEXT:
-{sentence_context}
-
-FONT USED: {font_family} (legacy encoding mechanically converted to Unicode)
-
-RAW CONVERTED TEXT (correct this):
+TEXT TO FIX:
 ---
 {chunk}
 ---
 
-Output ONLY the corrected text. Nothing else."""
+Output ONLY the corrected text:"""
 
 
-# ── Critic prompt ────────────────────────────────────────────────────────────
-_CRITIC_SYSTEM = """\
-You are an expert Nepali language reviewer and proofreader. Your job is to
-review corrected Nepali text and identify sentences that STILL do not make
-semantic sense — sentences where the meaning is unclear, garbled, or where
-characters are obviously wrong.
+def _devanagari_words(text: str) -> list[str]:
+    return _DEVANAGARI_RE.findall(text)
 
-Respond in JSON only. No other text.
-Format:
-{
-  "all_correct": true/false,
-  "issues": [
-    {
-      "sentence": "<exact sentence that is still broken>",
-      "problem": "<short description of what is wrong>",
-      "suggested_fix": "<your best guess at what it should say>"
+
+def _text_quality_metrics(text: str) -> dict[str, float]:
+    words = _devanagari_words(text)
+    if len(words) < 3:
+        return {
+            "unique_ratio": 1.0,
+            "consec_dup_ratio": 0.0,
+            "dominant_word_ratio": 0.0,
+            "word_count": len(words),
+        }
+
+    counts = Counter(words)
+    consec_dup = sum(1 for i in range(1, len(words)) if words[i] == words[i - 1])
+
+    return {
+        "unique_ratio": len(counts) / len(words),
+        "consec_dup_ratio": consec_dup / len(words),
+        "dominant_word_ratio": counts.most_common(1)[0][1] / len(words),
+        "word_count": len(words),
     }
-  ]
-}
-
-If all sentences are correct and meaningful, respond:
-{"all_correct": true, "issues": []}
-"""
-
-_CRITIC_USER = """\
-Review the following corrected text. Identify any sentence that still has
-wrong characters, broken meaning, or is not proper Nepali/English.
-
-SENTENCE MEANING CONTEXT (what each clause should mean):
-{sentence_context}
-
-TEXT TO REVIEW:
----
-{text}
----
-
-Respond in JSON only."""
 
 
-# ── Targeted fix prompt ──────────────────────────────────────────────────────
-_FIXER_SYSTEM = """\
-You are an expert Nepali Unicode text repair specialist. You will be given:
-  1. A broken sentence that doesn't make sense
-  2. A description of what's wrong
-  3. A suggested correct version
-  4. The surrounding context
-
-Using all of this, output ONLY the single corrected sentence. Nothing else.
-Preserve the original meaning and language (Nepali/English/mixed)."""
-
-_FIXER_USER = """\
-BROKEN SENTENCE: {sentence}
-PROBLEM: {problem}
-SUGGESTED FIX: {suggested}
-SURROUNDING CONTEXT:
-{context}
-
-Output ONLY the corrected single sentence:"""
+def _is_garbled_repetition(text: str) -> bool:
+    metrics = _text_quality_metrics(text)
+    if metrics["word_count"] < 5:
+        return False
+    if metrics["consec_dup_ratio"] > 0.12:
+        return True
+    if metrics["dominant_word_ratio"] > 0.22:
+        return True
+    if metrics["unique_ratio"] < 0.35:
+        return True
+    return bool(
+        re.search(r"([\u0900-\u097F]{1,12})\s+\1(?:\s+\1){2,}", text)
+    )
 
 
-# ---------------------------------------------------------------------------
-# Document type detector (for Actor context)
-# ---------------------------------------------------------------------------
+def _is_llm_output_acceptable(candidate: str, original: str) -> bool:
+    if not candidate or not candidate.strip():
+        return False
+    if _is_garbled_repetition(candidate):
+        return False
+    if len(original) > 80 and len(candidate) > len(original) * 1.35:
+        return False
 
-_DOC_PATTERNS = [
-    (r"(ऐन|नियमावली|नियमहरू|विनियमावली)", "Nepali law / government act"),
-    (r"(कार्यविधि|निर्देशिका|मार्गदर्शन)", "Nepali government procedure / guideline"),
-    (r"(सम्झौता|करार|अनुबन्ध)", "Nepali legal agreement / contract"),
-    (r"(निर्णय|आदेश|फैसला)", "Nepali court order / decision"),
-    (r"(पाठ्यक्रम|पाठ्यपुस्तक|अध्याय)", "Nepali educational content"),
-    (r"(समाचार|रिपोर्ट|प्रतिवेदन)", "Nepali news article / report"),
-    (r"(invoice|bill|receipt|amount|total)", "financial document"),
-    (r"(वार्षिक|बजेट|लेखा|हिसाब)", "Nepali financial / budget document"),
-]
+    cand = _text_quality_metrics(candidate)
+    orig = _text_quality_metrics(original)
+    if cand["consec_dup_ratio"] > orig["consec_dup_ratio"] + 0.05:
+        return False
+    if cand["dominant_word_ratio"] > orig["dominant_word_ratio"] + 0.08:
+        return False
+    if cand["unique_ratio"] + 0.08 < orig["unique_ratio"]:
+        return False
+    return True
+
+
+def _ollama_available(base_url: str = "http://localhost:11434") -> bool:
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def _detect_document_type(text: str) -> str:
-    for pattern, label in _DOC_PATTERNS:
+    patterns = [
+        (r"(ऐन|नियमावली|नियमहरू|विनियमावली)", "Nepali law / government act"),
+        (r"(कार्यविधि|निर्देशिका|मार्गदर्शन)", "Nepali government procedure"),
+        (r"(पाठ्यक्रम|पाठ्यपुस्तक|अध्याय)", "Nepali educational content"),
+    ]
+    for pattern, label in patterns:
         if re.search(pattern, text[:500], re.IGNORECASE):
             return label
     return "general Nepali document"
 
 
-# ---------------------------------------------------------------------------
-# Span-level raw conversion
-# ---------------------------------------------------------------------------
-
-def _raw_convert_span(text: str, font_name: str) -> str:
-    """Convert a single text span using the correct font map."""
-    if not text or not text.strip():
-        return text
-    if is_legacy_font(font_name):
-        return convert_legacy_text(text, font_name)
+def _apply_rule_repairs(text: str) -> str:
+    """Rule-based Devanagari repair — no LLM."""
+    if text and _DEVANAGARI_RE.search(text):
+        return repair_corrupted_devanagari(text)
     return text
 
 
-# ---------------------------------------------------------------------------
-# Page-level extraction with per-span font-aware conversion
-# ---------------------------------------------------------------------------
-
-def _extract_page_font_aware(page: fitz.Page) -> str:
-    """
-    Extract text from one PDF page.
-    Each span is converted using the font detected for that span.
-    """
-    page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-    blocks_out: list[str] = []
-
-    for block in page_dict.get("blocks", []):
-        if block.get("type") != 0:
-            continue
-        block_lines: list[str] = []
-        for line in block.get("lines", []):
-            line_parts: list[tuple[str, float]] = []
-            for span in line.get("spans", []):
-                font_name = span.get("font", "")
-                raw_text  = span.get("text", "")
-                bbox      = span.get("bbox", (0, 0, 0, 0))
-                x0        = bbox[0]
-                if not raw_text.strip():
-                    continue
-                converted = _raw_convert_span(raw_text, font_name)
-                line_parts.append((converted, x0))
-
-            if not line_parts:
-                continue
-
-            line_parts.sort(key=lambda t: t[1])
-            line_text = ""
-            for i, (text, x0) in enumerate(line_parts):
-                if i == 0:
-                    line_text = text
-                else:
-                    gap = x0 - line_parts[i - 1][1]
-                    sep = "\t" if gap > 50 else (" " if gap > 5 else "")
-                    line_text += sep + text
-
-            block_lines.append(line_text)
-
-        if block_lines:
-            blocks_out.append("\n".join(block_lines))
-
-    return "\n\n".join(blocks_out)
-
-
-# ---------------------------------------------------------------------------
-# Post-conversion cleanup (before AI sees it)
-# ---------------------------------------------------------------------------
-
-_CLEANUP_RULES = [
-    (r"ाा+", "ा"), (r"िि+", "ि"), (r"ीी+", "ी"),
-    (r"ुु+", "ु"), (r"ूू+", "ू"), (r"ेे+", "े"),
-    (r"ैै+", "ै"), (r"ोो+", "ो"), (r"ौौ+", "ौ"),
-    (r"्+", "्"), (r"्\s", " "), (r"।।", "।"),
-    (r"[ \t]+", " "), (r"\n{4,}", "\n\n\n"),
-]
-
-
-def _cleanup(text: str) -> str:
-    for pattern, replacement in _CLEANUP_RULES:
-        text = re.sub(pattern, replacement, text)
-    return text.strip()
-
-
-# ---------------------------------------------------------------------------
-# Critic-Actor correction engine
-# ---------------------------------------------------------------------------
-
-def _actor_correct(
+def _actor_correct_chunk(
     chunk: str,
     llm: ChatOllama,
     doc_context: str,
-    font_family: str,
-    sentence_context: str = "",
 ) -> str:
-    """Run the Actor: deeply correct one chunk of converted text."""
-    prompt = _ACTOR_USER.format(
-        context=doc_context,
-        sentence_context=sentence_context or "(none)",
-        font_family=font_family,
-        chunk=chunk,
-    )
+    prompt = _ACTOR_USER.format(context=doc_context, chunk=chunk)
     try:
         resp = llm.invoke([
             {"role": "system", "content": _ACTOR_SYSTEM},
-            {"role": "user",   "content": prompt},
+            {"role": "user", "content": prompt},
         ])
-        return resp.content.strip() if hasattr(resp, "content") else str(resp).strip()
+        corrected = resp.content.strip() if hasattr(resp, "content") else str(resp).strip()
+        if _is_llm_output_acceptable(corrected, chunk):
+            return corrected
+        logger.warning("AI chunk rejected — keeping mechanical conversion for this section.")
+        return chunk
     except Exception as exc:
-        logger.warning("Actor pass failed: %s", exc)
+        logger.warning("AI correction failed: %s", exc)
         return chunk
 
 
-def _critic_review(text: str, llm: ChatOllama, sentence_context: str = "") -> list[dict]:
+def _maybe_apply_ai(
+    mechanical_text: str,
+    model_name: str,
+    base_url: str,
+) -> tuple[str, bool, str | None]:
     """
-    Run the Critic: review corrected text, return list of issue dicts.
-    Each issue: {sentence, problem, suggested_fix}
-    Returns [] if everything is correct.
+    Optionally refine mechanical text with AI.
+    Returns (final_text, ai_applied, skip_reason).
     """
-    prompt = _CRITIC_USER.format(
-        text=text,
-        sentence_context=sentence_context or "(none)",
-    )
-    try:
-        resp = llm.invoke([
-            {"role": "system", "content": _CRITIC_SYSTEM},
-            {"role": "user",   "content": prompt},
-        ])
-        raw = resp.content.strip() if hasattr(resp, "content") else str(resp).strip()
-        # Extract JSON (handle markdown fences)
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not json_match:
-            return []
-        parsed = json.loads(json_match.group())
-        if parsed.get("all_correct"):
-            return []
-        return parsed.get("issues", [])
-    except Exception as exc:
-        logger.warning("Critic pass failed (JSON parse or LLM): %s", exc)
-        return []
+    mech_score = score_text_quality(mechanical_text)["score"]
 
-
-def _fixer_fix_sentence(
-    issue: dict,
-    surrounding_context: str,
-    llm: ChatOllama,
-) -> str:
-    """
-    Run the targeted Fixer on one broken sentence identified by the Critic.
-    Returns the fixed sentence.
-    """
-    prompt = _FIXER_USER.format(
-        sentence=issue["sentence"],
-        problem=issue.get("problem", "unknown"),
-        suggested=issue.get("suggested_fix", "unknown"),
-        context=surrounding_context[:400],
-    )
-    try:
-        resp = llm.invoke([
-            {"role": "system", "content": _FIXER_SYSTEM},
-            {"role": "user",   "content": prompt},
-        ])
-        fixed = resp.content.strip() if hasattr(resp, "content") else str(resp).strip()
-        return fixed or issue["sentence"]
-    except Exception as exc:
-        logger.warning("Fixer pass failed: %s", exc)
-        return issue.get("suggested_fix") or issue["sentence"]
-
-
-def _apply_fixes(text: str, issues: list[dict], llm: ChatOllama) -> str:
-    """Apply targeted sentence-level fixes identified by the Critic."""
-    result = text
-    for issue in issues:
-        broken = issue.get("sentence", "").strip()
-        if not broken or broken not in result:
-            continue
-        # Get 3 lines of surrounding context
-        idx = result.find(broken)
-        ctx_start = max(0, idx - 200)
-        ctx_end   = min(len(result), idx + len(broken) + 200)
-        ctx = result[ctx_start:ctx_end]
-
-        fixed = _fixer_fix_sentence(issue, ctx, llm)
-        if fixed and fixed != broken:
-            result = result.replace(broken, fixed, 1)
-            logger.info("Fixed: '%s' → '%s'", broken[:60], fixed[:60])
-
-    return result
-
-
-def _critic_actor_loop(
-    chunk: str,
-    llm: ChatOllama,
-    doc_context: str,
-    font_family: str,
-    max_iter: int = _MAX_ITERATIONS,
-) -> tuple[str, int]:
-    """
-    Full Critic-Actor loop for one chunk.
-
-    Returns (final_text, iterations_run).
-    """
-    sentence_context = synthesize_sentence_context(chunk)
-
-    # ── Actor: initial correction ───────────────────────────────────────────
-    current = _actor_correct(chunk, llm, doc_context, font_family, sentence_context)
-
-    for iteration in range(1, max_iter + 1):
-        # ── Critic: review ──────────────────────────────────────────────────
-        issues = _critic_review(current, llm, sentence_context)
-
-        if not issues:
-            logger.info("Critic satisfied after %d iteration(s).", iteration)
-            return current, iteration
-
+    if mech_score >= _AI_QUALITY_THRESHOLD:
         logger.info(
-            "Critic found %d issue(s) in iteration %d — running targeted fixes.",
-            len(issues), iteration,
+            "Mechanical conversion quality %.1f ≥ threshold — skipping AI.", mech_score
         )
+        return mechanical_text, False, "mechanical_quality_sufficient"
 
-        # ── Targeted fixer: fix flagged sentences ───────────────────────────
-        current = _apply_fixes(current, issues, llm)
+    if not _ollama_available(base_url):
+        return mechanical_text, False, "ollama_unavailable"
 
-    logger.info("Max iterations (%d) reached — accepting current text.", max_iter)
-    return current, max_iter
+    logger.info(
+        "Mechanical quality %.1f < threshold — attempting optional AI refinement.",
+        mech_score,
+    )
+
+    llm = ChatOllama(
+        model=model_name,
+        base_url=base_url,
+        temperature=0.05,
+        num_predict=1200,
+        repeat_penalty=1.2,
+        top_p=0.9,
+    )
+
+    doc_context = _detect_document_type(mechanical_text)
+    paragraphs = mechanical_text.split("\n\n")
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 > _CHUNK_SIZE and current:
+            chunks.append(current.strip())
+            current = para
+        else:
+            current += ("\n\n" if current else "") + para
+    if current.strip():
+        chunks.append(current.strip())
+
+    ai_chunks = [_actor_correct_chunk(c, llm, doc_context) for c in chunks]
+    ai_text = "\n\n".join(ai_chunks)
+
+    if _is_garbled_repetition(ai_text):
+        logger.warning("AI output garbled — keeping mechanical conversion.")
+        return mechanical_text, False, "ai_output_rejected"
+
+    ai_score = score_text_quality(ai_text)["score"]
+    if ai_score > mech_score + 2.0:
+        logger.info("AI improved quality %.1f → %.1f", mech_score, ai_score)
+        return ai_text, True, None
+
+    logger.info(
+        "AI did not improve quality (%.1f vs %.1f) — keeping mechanical.",
+        ai_score, mech_score,
+    )
+    return mechanical_text, False, "ai_no_improvement"
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def process_pdf_smart(pdf_bytes: bytes, model_name: str = _DEFAULT_MODEL) -> dict[str, Any]:
+def process_pdf_smart(
+    pdf_bytes: bytes,
+    model_name: str = _DEFAULT_MODEL,
+    *,
+    use_ai: bool = False,
+) -> dict[str, Any]:
     """
-    Full font-aware Critic-Actor AI pipeline on a PDF document.
+    High-accuracy PDF → Unicode pipeline.
 
-    Pipeline:
-      1. Detect fonts in the PDF
-      2. Extract + mechanically convert each text span
-      3. Chunk the converted text
-      4. For each chunk: Actor corrects → Critic reviews → Fixer fixes →
-         repeat until Critic is satisfied (or max_iter reached)
-      5. Reassemble and return verified clean Unicode text
+    Default: mechanical font conversion only (more accurate than OCR for
+    PDFs with embedded text layers).
 
-    Returns:
-        {
-            "text":          str   — final clean Unicode text
-            "font_analysis": dict  — from analyse_document_fonts()
-            "pages":         int
-            "raw_converted": str   — text after mechanical conversion (pre-AI)
-            "ai_applied":    bool
-            "iterations":    int   — total Critic-Actor iterations run
-        }
+    Optional AI: only when use_ai=True and ENABLE_LLM_OCR_ENHANCEMENT is set.
     """
-    # ── Step 1: Font detection ──────────────────────────────────────────────
-    logger.info("Step 1/4 — Analysing fonts in PDF …")
-    font_analysis = analyse_document_fonts(pdf_bytes)
-    font_family   = font_analysis.get("dominant_family", "unknown")
-    logger.info("Font analysis: %s", font_analysis["summary"])
+    logger.info("Step 1/2 — Direct font-aware extraction (no OCR) …")
+    result = extract_document_high_accuracy(pdf_bytes)
 
-    # ── Step 2: Span-level raw conversion ──────────────────────────────────
-    logger.info("Step 2/4 — Extracting and converting text spans …")
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as exc:
-        raise ValueError(f"Cannot open PDF: {exc}") from exc
+    mechanical_text = _apply_rule_repairs(result["text"])
+    font_analysis = result["font_analysis"]
+    quality = score_text_quality(mechanical_text)
 
-    page_texts: list[str] = []
-    try:
-        for i in range(len(doc)):
-            page = doc.load_page(i)
-            page_texts.append(_extract_page_font_aware(page))
-    finally:
-        doc.close()
-
-    raw_unicode = "\n\n".join(pt for pt in page_texts if pt.strip())
-    raw_unicode = _cleanup(raw_unicode)
-    if re.search(r"[\u0900-\u097F]", raw_unicode):
-        raw_unicode = repair_corrupted_devanagari(raw_unicode)
-
-    if not raw_unicode.strip():
+    if not mechanical_text.strip() or mechanical_text.startswith("[No text layer"):
         return {
-            "text": "[No text layer found in PDF.]",
+            "text": mechanical_text,
             "font_analysis": font_analysis,
-            "pages": len(page_texts),
+            "pages": result["pages"],
             "raw_converted": "",
             "ai_applied": False,
             "iterations": 0,
+            "confidence": 0.0,
+            "quality": quality,
+            "method": result["method"],
+            "ai_skipped_reason": "no_text_layer",
         }
 
-    # ── Step 3: Document context detection ─────────────────────────────────
-    doc_context = _detect_document_type(raw_unicode)
-    meaning = analyze_sentence_meaning(raw_unicode[:2000])
-    if meaning.summary_english:
-        doc_context = f"{doc_context}; {meaning.summary_english}"
-    logger.info("Document context detected: %s", doc_context)
-
-    # ── Step 4: Critic-Actor correction loop ────────────────────────────────
-    logger.info("Step 3/4 — Running Critic-Actor AI correction loop …")
-
-    # Use lower temperature for the Actor (deterministic corrections)
-    # and slightly higher for the Critic (to catch subtle issues)
-    llm = ChatOllama(
-        model=model_name,
-        temperature=0.05,
-        num_predict=4000,
+    ai_enabled = (
+        use_ai
+        and os.getenv("ENABLE_LLM_OCR_ENHANCEMENT", "false").lower() in ("1", "true", "yes")
     )
 
-    # Split into chunks (split at paragraph boundaries where possible)
-    paragraphs = raw_unicode.split("\n\n")
-    chunks: list[str] = []
-    current_chunk = ""
-    for para in paragraphs:
-        if len(current_chunk) + len(para) + 2 > _CHUNK_SIZE and current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = para
-        else:
-            current_chunk += ("\n\n" if current_chunk else "") + para
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-
-    corrected_chunks: list[str] = []
-    total_iterations = 0
-
-    for idx, chunk in enumerate(chunks):
+    if not ai_enabled:
         logger.info(
-            "Processing chunk %d/%d (%d chars) …", idx + 1, len(chunks), len(chunk)
+            "Step 2/2 — Mechanical conversion complete (score %.1f, confidence %.1f%%).",
+            quality["score"], result["confidence"],
         )
-        corrected, iters = _critic_actor_loop(
-            chunk, llm, doc_context, font_family
-        )
-        corrected_chunks.append(corrected)
-        total_iterations += iters
+        return {
+            "text": mechanical_text,
+            "font_analysis": font_analysis,
+            "pages": result["pages"],
+            "raw_converted": mechanical_text,
+            "ai_applied": False,
+            "iterations": 0,
+            "confidence": result["confidence"],
+            "quality": quality,
+            "method": result["method"],
+            "ai_skipped_reason": "ai_disabled",
+        }
 
-    final_text = "\n\n".join(corrected_chunks)
-    ai_applied = final_text.strip() != raw_unicode.strip()
-
-    logger.info(
-        "Pipeline complete. Pages=%d, FontStrategy=%s, TotalIterations=%d, AIApplied=%s",
-        len(page_texts), font_analysis["strategy"], total_iterations, ai_applied,
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    final_text, ai_applied, skip_reason = _maybe_apply_ai(
+        mechanical_text, model_name, ollama_url
     )
 
     return {
         "text": final_text,
         "font_analysis": font_analysis,
-        "pages": len(page_texts),
-        "raw_converted": raw_unicode,
+        "pages": result["pages"],
+        "raw_converted": mechanical_text,
         "ai_applied": ai_applied,
-        "iterations": total_iterations,
+        "iterations": 1 if ai_applied else 0,
+        "confidence": result["confidence"],
+        "quality": score_text_quality(final_text),
+        "method": "direct_font_conversion+ai" if ai_applied else result["method"],
+        "ai_skipped_reason": skip_reason,
     }

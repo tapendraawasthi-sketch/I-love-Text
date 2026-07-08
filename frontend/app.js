@@ -291,15 +291,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('model', 'llama3');
+            formData.append('use_ai', 'false');
 
-            setProgress(30, 100, 'Step 2 — Converting font encoding to Unicode…');
+            setProgress(40, 100, 'Step 2 — Converting font encoding to Unicode (no OCR)…');
 
             const resp = await fetch('/api/extract/smart-txt', {
                 method: 'POST',
                 body: formData,
             });
 
-            setProgress(60, 100, 'Step 3 — AI Actor correcting text meaning…');
+            setProgress(80, 100, 'Step 3 — Finalising Unicode text…');
 
             if (!resp.ok) {
                 let detail = `Server error ${resp.status}`;
@@ -316,6 +317,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const aiApplied     = resp.headers.get('X-AI-Applied') === 'true';
             const pages         = resp.headers.get('X-Pages') || '?';
             const aiIterations  = resp.headers.get('X-AI-Iterations') || '?';
+            const aiSkipped     = resp.headers.get('X-AI-Skipped-Reason') || '';
+            const confidence    = resp.headers.get('X-Confidence') || '?';
+            const qualityScore  = resp.headers.get('X-Quality-Score') || '?';
+            const method        = resp.headers.get('X-Method') || 'direct_font_conversion';
 
             // Download the .txt blob
             const blob = await resp.blob();
@@ -325,7 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const a   = document.createElement('a');
             a.href    = url;
             const baseName = currentFile.name.replace(/\.[^/.]+$/, '');
-            a.download = `${baseName}_ai_corrected.txt`;
+            a.download = `${baseName}_unicode.txt`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -340,13 +345,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // AI badge
             const badge = document.createElement('div');
-            badge.innerHTML = `<span class="ai-badge">✦ Intelligent PDF Converter</span>`;
+            badge.innerHTML = `<span class="ai-badge">✦ Font → Unicode Converter</span>`;
             metaPanel.appendChild(badge);
 
             addMetaItem('Pages', pages);
             addMetaItem('Font detected', dominantFont.toUpperCase());
             addMetaItem('Strategy', fontStrategy.replace(/_/g, ' '));
-            addMetaItem('AI correction', aiApplied ? `✓ Applied (${aiIterations} review rounds)` : 'Skipped (already clean)');
+            addMetaItem('Method', method.replace(/_/g, ' '));
+            addMetaItem('Confidence', `${confidence}%`);
+            addMetaItem('Quality score', qualityScore);
+            addMetaItem('AI correction', aiApplied ? `✓ Applied (${aiIterations} pass)` : (aiSkipped ? `Skipped (${aiSkipped.replace(/_/g, ' ')})` : 'Skipped (mechanical conversion used)'));
             addMetaItem('Output', 'Downloaded as .txt');
 
             resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -359,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
             aiConvertBtn.disabled = !(currentFile && getExt(currentFile) === '.pdf');
             aiIcon.classList.remove('hidden');
             aiSpinner.classList.add('hidden');
-            aiText.textContent = 'Intelligent PDF Converter';
+            aiText.textContent = 'Font → Unicode Converter';
             hideProgress();
         }
     });
