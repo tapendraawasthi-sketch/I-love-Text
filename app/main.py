@@ -340,6 +340,7 @@ async def extract_pdf_smart_txt_api(
             "X-Font-Strategy": result["font_analysis"].get("strategy", "unknown"),
             "X-Dominant-Font": result["font_analysis"].get("dominant_family", "unknown"),
             "X-AI-Applied": str(result["ai_applied"]).lower(),
+            "X-AI-Iterations": str(result.get("iterations", 0)),
         },
     )
 

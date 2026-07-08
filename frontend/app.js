@@ -285,21 +285,21 @@ document.addEventListener('DOMContentLoaded', () => {
         aiSpinner.classList.remove('hidden');
         aiText.textContent = 'Detecting font & converting…';
         showProgress();
-        setProgress(10, 100, 'Step 1 — Detecting fonts…');
+        setProgress(10, 100, 'Step 1 — Detecting fonts in document…');
 
         try {
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('model', 'llama3');
 
-            setProgress(30, 100, 'Step 2 — Converting legacy font to Unicode…');
+            setProgress(30, 100, 'Step 2 — Converting font encoding to Unicode…');
 
             const resp = await fetch('/api/extract/smart-txt', {
                 method: 'POST',
                 body: formData,
             });
 
-            setProgress(80, 100, 'Step 3 — AI understanding & correction…');
+            setProgress(60, 100, 'Step 3 — AI Actor correcting text meaning…');
 
             if (!resp.ok) {
                 let detail = `Server error ${resp.status}`;
@@ -315,6 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const dominantFont  = resp.headers.get('X-Dominant-Font') || 'unknown';
             const aiApplied     = resp.headers.get('X-AI-Applied') === 'true';
             const pages         = resp.headers.get('X-Pages') || '?';
+            const aiIterations  = resp.headers.get('X-AI-Iterations') || '?';
 
             // Download the .txt blob
             const blob = await resp.blob();
@@ -345,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
             addMetaItem('Pages', pages);
             addMetaItem('Font detected', dominantFont.toUpperCase());
             addMetaItem('Strategy', fontStrategy.replace(/_/g, ' '));
-            addMetaItem('AI correction', aiApplied ? '✓ Applied' : 'Skipped (already clean)');
+            addMetaItem('AI correction', aiApplied ? `✓ Applied (${aiIterations} review rounds)` : 'Skipped (already clean)');
             addMetaItem('Output', 'Downloaded as .txt');
 
             resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
