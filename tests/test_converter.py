@@ -53,3 +53,14 @@ def test_unicode_passthrough_not_reconverted():
 def test_legacy_encoded_detected():
     preeti_text = "g]kfn ;'ljwf"
     assert is_legacy_encoded(preeti_text) is True
+
+
+def test_preeti_date_string_detected():
+    assert is_legacy_encoded("@)#!.$.!*") is True
+
+
+def test_url_not_converted():
+    from app.legacy_fonts.converter import is_plain_ascii_text, convert_legacy_text
+    url = "www.lawcommission.gov.np"
+    assert is_plain_ascii_text(url) is True
+    assert convert_legacy_text(url, "Preeti") == url

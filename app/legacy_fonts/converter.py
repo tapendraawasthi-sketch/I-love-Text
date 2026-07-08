@@ -1,8 +1,12 @@
 """
 Core conversion engine for legacy Nepali fonts to Unicode.
 
-Tries npttf2utf library first, falls back to built-in Preeti mapping.
+Uses npttf2utf FontMapper when available, falls back to built-in Preeti mapping.
 """
+from __future__ import annotations
+
+import os
+import re
 from functools import lru_cache
 import logging
 
@@ -11,63 +15,82 @@ from app.legacy_fonts.preeti_map import preeti_to_unicode, conversion_quality, i
 
 logger = logging.getLogger("LegacyFontConverter")
 
-# Try to import npttf2utf
+_PLAIN_ASCII_RE = re.compile(r"^[a-zA-Z0-9._:/\-\s]+$")
+_PREETI_DATE_RE = re.compile(r"^[@)!#$%&(*.+^=\s\d]+$")
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
+# Try to import npttf2utf (API changed in 0.3.x)
+_HAS_NPTTF2UTF = False
+_FontMapper = None
+_MAP_JSON_PATH = None
+
 try:
-    from npttf2utf import npttf2utf
-    _HAS_NPTTF2UTF = True
-    logger.info("npttf2utf library loaded successfully")
-except ImportError as e:
-    _HAS_NPTTF2UTF = False
-    logger.warning(f"npttf2utf not available: {e}")
+    import npttf2utf
+    from npttf2utf import FontMapper as _FontMapperCls
+
+    _MAP_JSON_PATH = os.path.join(os.path.dirname(npttf2utf.__file__), "map.json")
+    _FontMapper = _FontMapperCls
+    _HAS_NPTTF2UTF = os.path.isfile(_MAP_JSON_PATH)
+    if _HAS_NPTTF2UTF:
+        logger.info("npttf2utf FontMapper loaded from %s", _MAP_JSON_PATH)
+except Exception as e:
+    logger.warning("npttf2utf not available: %s", e)
 
 
-@lru_cache(maxsize=32)
-def _get_npttf2utf_converter(map_name: str):
-    """Returns a cached npttf2utf converter instance."""
-    if not _HAS_NPTTF2UTF:
+_FONT_DISPLAY_NAMES = {
+    "preeti": "Preeti",
+    "kantipur": "Kantipur",
+    "sagarmatha": "Sagarmatha",
+    "himali": "Himali",
+    "aakriti": "Aakriti",
+    "pcsnepali": "PCS Nepali",
+}
+
+
+@lru_cache(maxsize=8)
+def _get_font_mapper():
+    if not _HAS_NPTTF2UTF or _FontMapper is None or not _MAP_JSON_PATH:
         return None
     try:
-        converter = npttf2utf.FontConverter(map_name)
-        return converter
-    except Exception as e:
-        logger.warning(f"Failed to create npttf2utf converter for {map_name}: {e}")
+        return _FontMapper(_MAP_JSON_PATH)
+    except Exception as exc:
+        logger.warning("Failed to create FontMapper: %s", exc)
         return None
 
 
-def _convert_with_npttf2utf(text: str, map_name: str) -> str | None:
-    """Try conversion with npttf2utf, return None if fails."""
-    converter = _get_npttf2utf_converter(map_name)
-    if converter is None:
-        return None
-    
-    try:
-        result = converter.convert(text)
-        if result and result != text:
-            # Verify conversion quality
-            quality = conversion_quality(text, result)
-            if quality["devanagari_ratio"] >= 20:
-                return result
-            logger.warning(f"npttf2utf produced low quality output ({quality['devanagari_ratio']}% Devanagari)")
-        return None
-    except Exception as e:
-        logger.warning(f"npttf2utf conversion error: {e}")
-        return None
+def is_plain_ascii_text(text: str) -> bool:
+    """URLs, emails, and plain English — never run through Preeti conversion."""
+    stripped = text.strip()
+    if not stripped:
+        return True
 
+    # Preeti-encoded dates like @)#!.$.!* must NOT be treated as plain ASCII.
+    if _PREETI_DATE_RE.match(stripped):
+        return False
 
-def _convert_with_builtin(text: str) -> str:
-    """Convert using built-in Preeti mapping."""
-    result = preeti_to_unicode(text)
-    quality = conversion_quality(text, result)
-    logger.info(f"Built-in conversion: {quality['devanagari_ratio']}% Devanagari")
-    return result
+    if "www." in stripped or "http://" in stripped or "https://" in stripped:
+        return True
+
+    # Page numbers and bare digits — never convert.
+    if re.fullmatch(r"\d+\s*", stripped):
+        return True
+
+    # Real email addresses only (letters after @), not Preeti date codes.
+    if re.search(r"@[a-zA-Z]", stripped) and "." in stripped:
+        return True
+
+    return bool(_PLAIN_ASCII_RE.match(stripped))
 
 
 def is_legacy_encoded(text: str) -> bool:
     """
     Return True when text looks like legacy font encoding (Preeti/Kantipur ASCII),
-    False when it is already Unicode Devanagari and should NOT be re-converted.
+    False when it is already Unicode Devanagari or plain ASCII Latin.
     """
     if not text or not text.strip():
+        return False
+
+    if is_plain_ascii_text(text):
         return False
 
     chars = [c for c in text if c.strip()]
@@ -79,52 +102,67 @@ def is_legacy_encoded(text: str) -> bool:
     deva_ratio = devanagari / len(chars)
     ascii_ratio = ascii_letters / len(chars)
 
-    # Already proper Unicode — converting again produces garbage.
     if deva_ratio >= 0.50 and ascii_ratio < 0.15:
         return False
+
+    if _PREETI_DATE_RE.match(text.strip()):
+        return True
 
     if is_likely_preeti(text):
         return True
 
-    # ASCII-heavy spans in a legacy-font PDF need conversion.
-    return ascii_ratio >= 0.20 and deva_ratio < 0.40
+    return ascii_ratio >= 0.08 or any(c in text for c in "]}/;{_|")
+
+
+def _convert_with_npttf2utf(text: str, map_name: str) -> str | None:
+    mapper = _get_font_mapper()
+    if mapper is None:
+        return None
+
+    from_font = _FONT_DISPLAY_NAMES.get(map_name, map_name.title())
+    try:
+        result = mapper.map_to_unicode(text, from_font=from_font)
+        if result and result != text:
+            quality = conversion_quality(text, result)
+            if quality["devanagari_ratio"] >= 10 or _PREETI_DATE_RE.match(text.strip()):
+                return result
+            logger.warning(
+                "npttf2utf low quality (%.1f%% Devanagari) for map %s",
+                quality["devanagari_ratio"], map_name,
+            )
+    except Exception as exc:
+        logger.warning("npttf2utf conversion error (%s): %s", map_name, exc)
+    return None
+
+
+def _convert_with_builtin(text: str) -> str:
+    result = preeti_to_unicode(text)
+    quality = conversion_quality(text, result)
+    logger.debug("Built-in conversion: %s%% Devanagari", quality["devanagari_ratio"])
+    return result
 
 
 def force_convert_legacy(text: str, map_name: str) -> str:
-    """Convert using a specific npttf2utf map, regardless of font name."""
+    """Convert using a specific map. Caller must ensure text needs conversion."""
     if not text or not text.strip():
         return text
+    if is_plain_ascii_text(text):
+        return text
 
-    if _HAS_NPTTF2UTF:
-        result = _convert_with_npttf2utf(text, map_name)
-        if result:
-            return result
-
-    # Built-in mapping is Preeti-only; use for preeti-like maps.
-    if map_name in ("preeti", "kantipur", "sagarmatha", "himali", "aakriti", "pcsnepali"):
-        return _convert_with_builtin(text)
-    return text
+    result = _convert_with_npttf2utf(text, map_name)
+    if result:
+        return result
+    return _convert_with_builtin(text)
 
 
 def convert_legacy_text(text: str, font_name: str) -> str:
-    """
-    Converts legacy-font-encoded text to proper Unicode Devanagari.
-    
-    Uses npttf2utf if available and working, falls back to built-in mapping.
-    
-    Args:
-        text: The raw text extracted from the PDF/DOCX (ASCII-encoded Devanagari)
-        font_name: The font name detected from the document
-        
-    Returns:
-        Unicode Devanagari text
-    """
+    """Convert legacy-font-encoded text to Unicode when needed."""
     if not text or not text.strip():
         return text
-
-    if not is_legacy_encoded(text):
+    if is_plain_ascii_text(text):
         return text
-
+    if not is_legacy_encoded(text) and not is_legacy_font(font_name):
+        return text
     if not is_legacy_font(font_name):
         return text
 
@@ -133,34 +171,29 @@ def convert_legacy_text(text: str, font_name: str) -> str:
 
 
 def smart_convert(text: str, font_name: str) -> str:
-    """Alias for convert_legacy_text for backward compatibility."""
     return convert_legacy_text(text, font_name)
 
 
 def check_conversion_status() -> dict:
-    """Check conversion capabilities for diagnostics."""
     status = {
         "npttf2utf_available": _HAS_NPTTF2UTF,
         "builtin_available": True,
         "supported_fonts": ["preeti", "kantipur", "sagarmatha", "himali", "aakriti", "siddhi"],
+        "map_json_path": _MAP_JSON_PATH,
     }
-    
+
     if _HAS_NPTTF2UTF:
-        # Test npttf2utf
         try:
-            conv = _get_npttf2utf_converter("preeti")
-            if conv:
-                test = conv.convert("g]kfn")  # "nepal" in Preeti
+            mapper = _get_font_mapper()
+            if mapper:
+                test = mapper.map_to_unicode("g]kfn", from_font="Preeti")
                 status["npttf2utf_test"] = test
-                status["npttf2utf_working"] = "नेपाल" in test or len(test) < len("g]kfn")
+                status["npttf2utf_working"] = "नेपाल" in test
             else:
                 status["npttf2utf_working"] = False
         except Exception as e:
             status["npttf2utf_error"] = str(e)
             status["npttf2utf_working"] = False
-    
-    # Test built-in
-    builtin_test = preeti_to_unicode("g]kfn")
-    status["builtin_test"] = builtin_test
-    
+
+    status["builtin_test"] = preeti_to_unicode("g]kfn")
     return status

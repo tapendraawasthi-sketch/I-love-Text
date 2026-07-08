@@ -55,11 +55,12 @@ async def startup_event():
         logger.warning("'nep' language pack NOT installed. Nepali OCR will fail.")
     
     # Check npttf2utf
-    try:
-        from npttf2utf import npttf2utf
-        logger.info("npttf2utf loaded successfully - legacy font conversion available")
-    except ImportError:
-        logger.warning("npttf2utf NOT installed. Legacy font conversion will be limited.")
+    from app.legacy_fonts.converter import check_conversion_status
+    conv_status = check_conversion_status()
+    if conv_status.get("npttf2utf_working"):
+        logger.info("npttf2utf working — legacy font conversion available")
+    else:
+        logger.warning("npttf2utf NOT working. Using built-in Preeti map only.")
 
 
 @app.exception_handler(Exception)

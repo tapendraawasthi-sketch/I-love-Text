@@ -18,8 +18,13 @@ from typing import Any
 
 import fitz
 
-from app.legacy_fonts.converter import is_legacy_encoded, force_convert_legacy
-from app.legacy_fonts.mappings import is_legacy_font, get_npttf2utf_map_name
+from app.legacy_fonts.converter import (
+    is_legacy_encoded,
+    force_convert_legacy,
+    is_plain_ascii_text,
+    is_legacy_font,
+)
+from app.legacy_fonts.mappings import get_npttf2utf_map_name
 from app.legacy_fonts.preeti_map import is_likely_preeti
 from app.nlp.font_detector import analyse_document_fonts, guess_font_from_text
 from app.logging_config import get_logger
@@ -31,6 +36,17 @@ _DEVANAGARI_DIGIT_RE = re.compile(r"[०-९]")
 _GARBAGE_RE = re.compile(r"undefined|NaN|\[object", re.I)
 _GARBAGE_SYMBOL_RE = re.compile(r"[|=\[\]{}<>^~`\\]")
 _LONG_DEVANAGARI_RUN_RE = re.compile(r"[\u0900-\u097F]{22,}")
+_PUA_RE = re.compile(r"[\uE000-\uF8FF]")
+_DECORATIVE_FONT_FRAGMENTS = ("wingdings", "webdings", "symbol", "zapfdingbats")
+
+
+def _is_decorative_font(font_name: str) -> bool:
+    fl = font_name.lower()
+    return any(d in fl for d in _DECORATIVE_FONT_FRAGMENTS)
+
+
+def _is_preeti_font(font_name: str) -> bool:
+    return "preeti" in font_name.lower()
 
 
 def _devanagari_ratio(text: str) -> float:
@@ -85,7 +101,8 @@ def _fix_common_errors(text: str) -> str:
     result = text
     for pattern, replacement in fixes:
         result = re.sub(pattern, replacement, result)
-    
+
+    result = _PUA_RE.sub("", result)
     return result.strip()
 
 
@@ -134,26 +151,32 @@ def build_font_lookup(font_analysis: dict[str, Any]) -> dict[str, dict[str, Any]
 
 
 def _should_convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> bool:
-    # Never re-convert text that is already proper Unicode Devanagari.
-    if not is_legacy_encoded(raw_text):
+    if not raw_text or not raw_text.strip():
         return False
+    if _is_decorative_font(font_name):
+        return False
+    if is_plain_ascii_text(raw_text):
+        return False
+
+    # PDF font name is ground truth for Preeti/Kantipur spans.
+    if _is_preeti_font(font_name) or is_legacy_font(font_name):
+        return True
     if font_info and font_info.get("is_legacy"):
         return True
-    if is_legacy_font(font_name):
-        return True
-    if is_likely_preeti(raw_text):
-        return True
-    guess = guess_font_from_text(raw_text)
-    return guess["family"] not in ("unicode", "unknown") and guess["confidence"] >= 40
+    return is_legacy_encoded(raw_text)
 
 
 def _convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> str:
+    if _is_decorative_font(font_name):
+        return ""
     if not _should_convert_span(raw_text, font_name, font_info):
         return raw_text
 
     primary_map = None
     if font_info and font_info.get("conversion_map"):
         primary_map = font_info["conversion_map"]
+    elif _is_preeti_font(font_name):
+        primary_map = "preeti"
     elif is_legacy_font(font_name):
         primary_map = get_npttf2utf_map_name(font_name)
     else:
@@ -162,7 +185,7 @@ def _convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | Non
             primary_map = guess["family"]
 
     maps_to_try: list[str] = []
-    for m in (primary_map, "preeti", "kantipur", "sagarmatha"):
+    for m in (primary_map, "preeti", "kantipur"):
         if m and m not in maps_to_try:
             maps_to_try.append(m)
 
@@ -397,28 +420,20 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
     page_texts = [r["text"] for r in page_results if r.get("text", "").strip()]
     converted_text = _fix_common_errors("\n\n".join(page_texts))
 
-    # Also try raw passthrough — best for PDFs that already store Unicode text.
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        raw_pages = [_extract_page_raw(doc.load_page(i)) for i in range(len(doc))]
-        doc.close()
-        raw_text = _fix_common_errors("\n\n".join(p for p in raw_pages if p.strip()))
-    except Exception:
-        raw_text = ""
-
-    converted_score = score_text_quality(converted_text)["score"]
-    raw_score = score_text_quality(raw_text)["score"] if raw_text else 0.0
-
-    if raw_score > converted_score + 3.0:
-        logger.info(
-            "Raw Unicode passthrough scores higher (%.1f vs %.1f) — using unconverted text.",
-            raw_score, converted_score,
-        )
-        final_text = raw_text
-        method = "unicode_passthrough"
-    else:
-        final_text = converted_text
-        method = "direct_font_conversion"
+    # For Preeti PDFs, converted output should always win over raw ASCII passthrough.
+    final_text = converted_text
+    method = "direct_font_conversion"
+    if not font_analysis.get("dominant_family") == "preeti":
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            raw_pages = [_extract_page_raw(doc.load_page(i)) for i in range(len(doc))]
+            doc.close()
+            raw_text = _fix_common_errors("\n\n".join(p for p in raw_pages if p.strip()))
+            if score_text_quality(raw_text)["score"] > score_text_quality(converted_text)["score"] + 3.0:
+                final_text = raw_text
+                method = "unicode_passthrough"
+        except Exception:
+            pass
 
     confidences = [r.get("confidence", 0.0) for r in page_results if r.get("text")]
     mean_confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0

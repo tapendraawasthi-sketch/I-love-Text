@@ -47,6 +47,7 @@ FONT_REGISTRY: dict[str, dict[str, str]] = {
     "sagarmatha":   {"name": "Sagarmatha",     "family": "sagarmatha","map": "sagarmatha"},
 
     # --- Himali family ---
+    "himalaya":     {"name": "Himalaya",       "family": "unicode",   "map": None},  # URL/header font, NOT Himali
     "himali":       {"name": "Himali",         "family": "himali",    "map": "himali"},
     "himalb":       {"name": "Himali Bold",    "family": "himali",    "map": "himali"},
 
