@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const extractBtn = document.getElementById('extract-btn');
     const convertPdfBtn = document.getElementById('convert-pdf-btn');
+    const aiConvertBtn = document.getElementById('ai-convert-btn');
     const langSelect = document.getElementById('lang-select');
     const btnText = document.querySelector('.btn-text');
     const spinner = document.querySelector('.spinner');
@@ -107,6 +108,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const ext = currentFile ? getExt(currentFile) : '';
         const canConvert = currentFile && (ext === '.pdf' || ext === '.docx');
         convertPdfBtn.disabled = !canConvert;
+
+        // Intelligent PDF Converter only works on PDFs
+        aiConvertBtn.disabled = !(currentFile && ext === '.pdf');
         
         if (!currentFile) {
             document.querySelector('.upload-content').classList.remove('hidden');
@@ -256,8 +260,105 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             extractBtn.disabled = false;
             convertPdfBtn.disabled = !currentFile || !['.pdf', '.docx'].includes(getExt(currentFile));
+            aiConvertBtn.disabled = !(currentFile && getExt(currentFile) === '.pdf');
             btnText.textContent = 'Extract Text (Max Quality)';
             spinner.classList.add('hidden');
+            hideProgress();
+        }
+    });
+
+    // ── Intelligent PDF Converter ─────────────────────────────────────────
+    const aiSpinner   = aiConvertBtn.querySelector('.ai-spinner');
+    const aiText      = aiConvertBtn.querySelector('.ai-btn-text');
+    const aiIcon      = aiConvertBtn.querySelector('.ai-btn-icon');
+
+    aiConvertBtn.addEventListener('click', async () => {
+        if (!currentFile || getExt(currentFile) !== '.pdf') return;
+
+        hideError();
+        resultSection.classList.add('hidden');
+        extractBtn.disabled = true;
+        convertPdfBtn.disabled = true;
+        aiConvertBtn.disabled = true;
+
+        aiIcon.classList.add('hidden');
+        aiSpinner.classList.remove('hidden');
+        aiText.textContent = 'Detecting font & converting…';
+        showProgress();
+        setProgress(10, 100, 'Step 1 — Detecting fonts…');
+
+        try {
+            const formData = new FormData();
+            formData.append('file', currentFile);
+            formData.append('model', 'llama3');
+
+            setProgress(30, 100, 'Step 2 — Converting legacy font to Unicode…');
+
+            const resp = await fetch('/api/extract/smart-txt', {
+                method: 'POST',
+                body: formData,
+            });
+
+            setProgress(80, 100, 'Step 3 — AI understanding & correction…');
+
+            if (!resp.ok) {
+                let detail = `Server error ${resp.status}`;
+                try {
+                    const err = await resp.json();
+                    detail = err.detail || err.error || detail;
+                } catch (_) {}
+                throw new Error(detail);
+            }
+
+            // Read response headers for font metadata
+            const fontStrategy  = resp.headers.get('X-Font-Strategy') || 'unknown';
+            const dominantFont  = resp.headers.get('X-Dominant-Font') || 'unknown';
+            const aiApplied     = resp.headers.get('X-AI-Applied') === 'true';
+            const pages         = resp.headers.get('X-Pages') || '?';
+
+            // Download the .txt blob
+            const blob = await resp.blob();
+            setProgress(100, 100, 'Done! Downloading…');
+
+            const url = URL.createObjectURL(blob);
+            const a   = document.createElement('a');
+            a.href    = url;
+            const baseName = currentFile.name.replace(/\.[^/.]+$/, '');
+            a.download = `${baseName}_ai_corrected.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            // Also show the text in the result area
+            const text = await new Response(blob.slice()).text();
+
+            resultText.value = text;
+            resultSection.classList.remove('hidden');
+            metaPanel.innerHTML = '';
+
+            // AI badge
+            const badge = document.createElement('div');
+            badge.innerHTML = `<span class="ai-badge">✦ Intelligent PDF Converter</span>`;
+            metaPanel.appendChild(badge);
+
+            addMetaItem('Pages', pages);
+            addMetaItem('Font detected', dominantFont.toUpperCase());
+            addMetaItem('Strategy', fontStrategy.replace(/_/g, ' '));
+            addMetaItem('AI correction', aiApplied ? '✓ Applied' : 'Skipped (already clean)');
+            addMetaItem('Output', 'Downloaded as .txt');
+
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        } catch (err) {
+            showError(err.message || 'Intelligent conversion failed.');
+        } finally {
+            extractBtn.disabled = false;
+            convertPdfBtn.disabled = !currentFile || !['.pdf', '.docx'].includes(getExt(currentFile));
+            aiConvertBtn.disabled = !(currentFile && getExt(currentFile) === '.pdf');
+            aiIcon.classList.remove('hidden');
+            aiSpinner.classList.add('hidden');
+            aiText.textContent = 'Intelligent PDF Converter';
             hideProgress();
         }
     });

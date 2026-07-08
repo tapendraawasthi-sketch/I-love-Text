@@ -348,3 +348,56 @@ textarea:focus {
     opacity: 0.6;
     cursor: not-allowed;
 }
+
+/* ── Intelligent PDF Converter button ───────────────────────── */
+#ai-convert-btn {
+    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+    color: white;
+    border: none;
+    min-width: 200px;
+    gap: 0.4rem;
+    box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+    transition: background 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+#ai-convert-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #6d28d9 0%, #4338ca 100%);
+    box-shadow: 0 4px 14px rgba(124, 58, 237, 0.45);
+}
+
+#ai-convert-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.ai-btn-icon {
+    font-size: 1.1rem;
+    line-height: 1;
+}
+
+.ai-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: white;
+    animation: spin 0.85s linear infinite;
+    flex-shrink: 0;
+}
+
+/* AI result badge in meta panel */
+.ai-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: #ede9fe;
+    color: #5b21b6;
+    border: 1px solid #c4b5fd;
+    border-radius: 999px;
+    padding: 0.2rem 0.75rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
