@@ -27,6 +27,7 @@ from app.legacy_fonts.converter import (
 from app.legacy_fonts.mappings import get_npttf2utf_map_name
 from app.legacy_fonts.preeti_map import is_likely_preeti
 from app.nlp.font_detector import analyse_document_fonts, guess_font_from_text
+from app.extract.unicode_validator import repair_devanagari_unicode, validate_devanagari_text
 from app.logging_config import get_logger
 
 logger = get_logger("DirectExtract")
@@ -66,44 +67,24 @@ def _normalize_unicode(text: str) -> str:
 
 
 def _fix_common_errors(text: str) -> str:
-    """Fix common conversion errors and normalize text."""
+    """Fix common conversion errors and normalize text with Unicode validation."""
     if not text:
         return text
 
     text = _normalize_unicode(text)
 
-    # Fix common Preeti conversion issues
-    fixes = [
-        # Double matras
-        (r"ाा", "ा"),
-        (r"िि", "ि"),
-        (r"ीी", "ी"),
-        (r"ुु", "ु"),
-        (r"ूू", "ू"),
-        (r"ेे", "े"),
-        (r"ैै", "ै"),
-        (r"ोो", "ो"),
-        (r"ौौ", "ौ"),
-        # Misplaced chandrabindu
-        (r"(.)(ँ)([ा-ौ])", r"\1\3\2"),
-        # Extra halant at word boundaries
-        (r"्\s", " "),
-        (r"्$", ""),
-        # Common character confusions in Preeti
-        (r"।।", "।"),
-        # Matra before consonant → after consonant
-        (r"ि([क-ह])", r"\1ि"),
-        # Normalize spaces
-        (r"[ \t]+", " "),
-        (r"\n{3,}", "\n\n"),
-    ]
-    
-    result = text
-    for pattern, replacement in fixes:
-        result = re.sub(pattern, replacement, result)
+    # Apply Devanagari-specific Unicode repairs (matra reordering, etc.)
+    if _DEVANAGARI_RE.search(text):
+        text = repair_devanagari_unicode(text)
 
-    result = _PUA_RE.sub("", result)
-    return result.strip()
+    # Remove PUA characters
+    text = _PUA_RE.sub("", text)
+
+    # Normalize spaces
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
 
 
 def _validate_conversion(original: str, converted: str, font_name: str) -> dict[str, Any]:

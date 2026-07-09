@@ -19,6 +19,7 @@ from typing import Any
 from app.extract.document_model import (
     PageModel, DocumentModel, DocumentElement, ElementType
 )
+from app.extract.unicode_validator import validate_text_block
 
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 _GARBAGE_RE = re.compile(r"undefined|NaN|\[object|function\s*\(", re.I)
@@ -57,63 +58,60 @@ class PageConfidence:
 
 
 def score_page(page: PageModel) -> PageConfidence:
-    """
-    Compute confidence scores for a page.
-    """
+    """Compute confidence scores for a page with Unicode validation."""
     pc = PageConfidence(page_number=page.page_number)
-
     all_text = " ".join(e.text for e in page.all_elements_ordered)
 
-    # --- Extraction confidence ---
+    # --- Extraction confidence (existing) ---
     if not all_text.strip():
         pc.extraction = 0.0
         pc.warnings.append("No text extracted")
     else:
         score = 100.0
-
-        # Penalty for garbage patterns
         if _GARBAGE_RE.search(all_text):
             score -= 30
             pc.warnings.append("Garbage patterns detected")
-
-        # Penalty for PUA characters (unconverted legacy font remnants)
         pua_count = len(_PUA_RE.findall(all_text))
         if pua_count > 0:
             score -= min(20, pua_count * 2)
             pc.warnings.append(f"{pua_count} unconverted characters")
-
-        # Bonus for having reasonable text density
         char_count = len(all_text.strip())
         if char_count < 10:
             score -= 20
             pc.warnings.append("Very little text found")
-
         pc.extraction = max(0, min(100, score))
 
-    # --- Layout confidence ---
-    layout_score = 85.0  # Base score for single-column
+    # --- Unicode quality (NEW) ---
+    unicode_quality = validate_text_block(all_text)
+    if unicode_quality.get("repairs", 0) > 0:
+        repair_ratio = unicode_quality.get("repair_ratio", 0)
+        if repair_ratio > 20:
+            pc.encoding -= 15
+            pc.warnings.append(f"High Unicode repair ratio: {repair_ratio}%")
+        elif repair_ratio > 5:
+            pc.encoding -= 5
+            pc.warnings.append(f"Some Unicode repairs needed: {repair_ratio}%")
+
+    # --- Layout confidence (existing) ---
+    layout_score = 85.0
     if len(page.columns) > 1:
-        # Multi-column detected: check if columns have balanced content
         col_counts = [len(c.elements) for c in page.columns]
         if col_counts:
             avg = sum(col_counts) / len(col_counts)
             if avg > 0:
                 variance = sum((c - avg) ** 2 for c in col_counts) / len(col_counts)
-                # High variance = unbalanced columns = lower confidence
                 if variance > avg * 2:
                     layout_score -= 15
                     pc.warnings.append("Unbalanced column content")
-
-        layout_score = min(95, layout_score)  # Multi-column has slight uncertainty
+        layout_score = min(95, layout_score)
     else:
-        layout_score = 95.0  # Single column is straightforward
-
+        layout_score = 95.0
     pc.layout = max(0, min(100, layout_score))
 
-    # --- Table confidence ---
+    # --- Table confidence (existing) ---
     tables = [e for e in page.elements if e.element_type == ElementType.TABLE]
     if not tables:
-        pc.table = 100.0  # No tables = no table errors
+        pc.table = 100.0
     else:
         table_score = 80.0
         for table in tables:
@@ -121,52 +119,38 @@ def score_page(page: PageModel) -> PageConfidence:
                 table_score -= 20
                 pc.warnings.append("Empty table detected")
             else:
-                # Check for consistent column counts
                 col_counts = [len(r) for r in table.table_rows]
                 if len(set(col_counts)) > 2:
                     table_score -= 10
                     pc.warnings.append("Inconsistent table column counts")
-
-                # Check for mostly empty rows
                 empty_rows = sum(
                     1 for r in table.table_rows
                     if all(not cell.strip() for cell in r)
                 )
                 if empty_rows > len(table.table_rows) * 0.3:
                     table_score -= 15
-
         pc.table = max(0, min(100, table_score))
 
-    # --- Encoding confidence ---
+    # --- Encoding confidence with Unicode validation (ENHANCED) ---
     if not all_text.strip():
         pc.encoding = 0.0
     else:
         enc_score = 100.0
         total_chars = sum(1 for c in all_text if c.strip())
-
         if total_chars > 0:
             deva_chars = sum(1 for c in all_text if _DEVANAGARI_RE.match(c))
-            ascii_chars = sum(1 for c in all_text if c.isascii() and c.isalpha())
-
             deva_ratio = deva_chars / total_chars
-            ascii_ratio = ascii_chars / total_chars
 
-            # If document has legacy fonts but low Devanagari output: conversion may have failed
             if page.legacy_fonts_detected and deva_ratio < 0.2:
                 enc_score -= 30
                 pc.warnings.append("Low Devanagari ratio despite legacy fonts")
 
-            # Mixed ASCII and Devanagari in unexpected proportions
-            if 0.2 < ascii_ratio < 0.5 and 0.2 < deva_ratio < 0.5:
-                enc_score -= 10
-                pc.warnings.append("Mixed encoding detected")
-
-            # Check for common conversion artifacts
-            # Double matras, broken conjuncts
-            artifacts = len(re.findall(r'[ा-ौ]{2,}', all_text))
-            if artifacts > 5:
-                enc_score -= min(20, artifacts * 2)
-                pc.warnings.append(f"{artifacts} possible conversion artifacts")
+            # Unicode sequence quality
+            if unicode_quality.get("confidence", 100) < 70:
+                enc_score -= 20
+                pc.warnings.append(
+                    f"Unicode quality: {unicode_quality.get('confidence', 0)}%"
+                )
 
         pc.encoding = max(0, min(100, enc_score))
 
