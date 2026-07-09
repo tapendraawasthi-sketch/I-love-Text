@@ -269,6 +269,21 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
         }
     """
     page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+
+    # --- Detect table bounding boxes so we can skip them in block extraction ---
+    from app.extract.table_extractor import extract_tables_from_page, get_table_bboxes
+    table_bboxes = get_table_bboxes(page)
+    tables = extract_tables_from_page(page, font_lookup)
+
+    def _in_table(bbox: tuple) -> bool:
+        """Return True if bbox overlaps any detected table region."""
+        x0, y0, x1, y1 = bbox[:4]
+        for tx0, ty0, tx1, ty1 in table_bboxes:
+            overlap_x = x0 < tx1 and x1 > tx0
+            overlap_y = y0 < ty1 and y1 > ty0
+            if overlap_x and overlap_y:
+                return True
+        return False
     
     detected_fonts: set[str] = set()
     legacy_fonts: set[str] = set()
@@ -277,6 +292,11 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
     converted_chars = 0
     
     for block in page_dict.get("blocks", []):
+        # Skip blocks that are inside a detected table (handled separately)
+        block_bbox = block.get("bbox", (0, 0, 0, 0))
+        if table_bboxes and _in_table(block_bbox):
+            continue
+
         if block.get("type") != 0:  # Text block only
             continue
         
@@ -335,6 +355,17 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
     
     # Combine blocks
     raw_output = "\n\n".join(blocks_output)
+
+    # --- Merge table content at correct positions in output ---
+    if tables:
+        # Build a list of (y0, text) for both normal blocks and tables
+        block_items: list[tuple[float, str]] = []
+        for blk, blk_text in zip(page_dict.get("blocks", []), blocks_output):
+            block_items.append((blk.get("bbox", (0, 0, 0, 0))[1], blk_text))
+        for tbl in tables:
+            block_items.append((tbl["bbox"][1], "\n" + tbl["formatted"] + "\n"))
+        block_items.sort(key=lambda x: x[0])
+        raw_output = "\n\n".join(text for _, text in block_items)
     
     # Apply fixes
     final_text = _fix_common_errors(raw_output)
@@ -385,6 +416,7 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
         "converted_ratio": round(converted_chars / max(total_chars, 1) * 100, 1),
         "validation": validation,
         "quality": quality,
+        "tables": tables,
     }
 
 

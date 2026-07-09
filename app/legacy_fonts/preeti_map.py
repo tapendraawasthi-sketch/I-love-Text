@@ -42,7 +42,7 @@ PREETI_MAP = {
     "%": "५", "^": "६", "&": "७", "*": "८", "(": "९",
     
     # Punctuation and special
-    ".": "।", "Ù": "॥", "F": "ँ", "M": "ं", "Ã": "ः",
+    ".": "।", "Ù": "॥", "Ã": "ः",
     
     # Common conjuncts and combinations
     "Qm": "क्र", "S": "क्क", "Ss": "क्क", "Sof": "क्या", "Sn": "क्ल",
@@ -61,7 +61,7 @@ PREETI_MAP = {
     "Kof": "प्या", "Ko": "प्य", "K/": "प्र", "Kn": "प्ल", "Kk": "प्प", "K\\": "प्",
     "km": "फ्", "Dof": "ब्या", "Do": "ब्य", "D/": "ब्र", "Da": "ब्ब", "D": "ब्",
     "Eo": "भ्य", "E/": "भ्र", "Ed": "भ्म",
-    "Do": "म्य", "Dn": "म्ल", "Dd": "म्म", "D/": "म्र",
+    "do": "म्य", "Dn": "म्ल", "Dd": "म्म", "d/": "म्र",
     "N": "ल्", "Nn": "ल्ल", "No": "ल्य",
     "J": "श्", "Jo": "श्य", "Jj": "श्व", "J/": "श्र",
     "i": "ष्", "i6": "ष्ट", "i7": "ष्ठ",
@@ -76,8 +76,8 @@ PREETI_MAP = {
     "¥": "र्",  # Repha (र् before consonant)
     "ß": "द्व", 
     "®": "र्",
-    "§": "द्द",
-    "¨": "द्ध",
+    "§": "द्ध",
+    "¨": "ड्ढ",
     "©": "श्र",
     "ª": "ङ",
     "«": "ट्र",
@@ -149,6 +149,17 @@ PREETI_MAP = {
     "ø": "ल्ल",
     "ù": "श्च",
     "ú": "क्ष",
+    "É": "ट्ट",
+    "Ê": "ट्ठ",
+    "Ë": "ड्ड",
+    "Ì": "ड्ढ",
+    "Í": "ढ्ढ",
+    "Î": "ण्ण",
+    "×": "।",
+    "Ø": "॥",
+    "·": "ˈ",
+    "–": "–",
+    "—": "—",
 }
 
 # Extended character codes for special Preeti symbols
@@ -170,28 +181,31 @@ _SORTED_KEYS = _build_sorted_keys()
 
 def preeti_to_unicode(text: str) -> str:
     """
-    Convert Preeti-encoded text to Unicode Devanagari.
-    
-    Args:
-        text: Text encoded in Preeti font
-        
-    Returns:
-        Unicode Devanagari text
+    Convert Preeti-encoded ASCII text to Unicode Devanagari.
+
+    Uses longest-match-first so multi-char sequences like "cf}" are
+    matched before their component characters "c", "f", "}".
     """
     if not text:
         return text
-    
-    result = text
-    
-    # Replace longest patterns first to avoid partial matches
-    for key in _SORTED_KEYS:
-        if key in result:
-            result = result.replace(key, PREETI_MAP[key])
-    
-    # Fix common issues after conversion
-    result = _fix_preeti_output(result)
-    
-    return result
+
+    # Sort keys longest-first so greedy matching works correctly.
+    sorted_keys = sorted(PREETI_MAP.keys(), key=len, reverse=True)
+
+    result = []
+    i = 0
+    while i < len(text):
+        matched = False
+        for key in sorted_keys:
+            if text[i:i + len(key)] == key:
+                result.append(PREETI_MAP[key])
+                i += len(key)
+                matched = True
+                break
+        if not matched:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
 
 
 def _fix_preeti_output(text: str) -> str:
@@ -221,32 +235,19 @@ def _fix_preeti_output(text: str) -> str:
 
 def is_likely_preeti(text: str) -> bool:
     """
-    Detect if text is likely Preeti-encoded based on character patterns.
+    Return True when the text looks like it came from Preeti font encoding.
+    Preeti uses specific ASCII chars that rarely appear together in English.
     """
-    if not text or len(text) < 10:
+    import re
+    if not text or not text.strip():
         return False
-    
-    # Common Preeti patterns
-    indicators = [
-        "sf", "cf", "of", "df", "jf", "tf", "xf",  # Common endings
-        "s]", "g]", "b]", "x]",  # More patterns
-        ";+", "k|", "cg", "/f",  # Common combinations
-        "sfo{", ";/sf/", "g]kfn",  # Common words
-    ]
-    
-    score = sum(1 for ind in indicators if ind in text)
-    
-    # Also check ratio of ASCII letters vs Devanagari
+    # Preeti-specific chars: backslash halant, special brackets used as matras
+    preeti_signals = re.compile(r"[\\;lLfmosuv]")
     ascii_letters = sum(1 for c in text if c.isascii() and c.isalpha())
-    devanagari = sum(1 for c in text if '\u0900' <= c <= '\u097F')
-    
-    # High ASCII + low Devanagari + pattern matches = likely Preeti
-    if len(text) > 0:
-        ascii_ratio = ascii_letters / len(text)
-        if ascii_ratio > 0.3 and devanagari < 5 and score >= 2:
-            return True
-    
-    return score >= 3
+    if ascii_letters == 0:
+        return False
+    signal_hits = len(preeti_signals.findall(text))
+    return signal_hits / max(ascii_letters, 1) > 0.20
 
 
 # Precompiled for faster execution
@@ -254,30 +255,26 @@ _DEVANAGARI_RE = re.compile(r'[\u0900-\u097F]')
 
 
 def conversion_quality(original: str, converted: str) -> dict:
-    """
-    Assess quality of conversion.
-    """
-    if not converted:
-        return {"quality": "empty", "devanagari_ratio": 0}
-    
-    devanagari_chars = len(_DEVANAGARI_RE.findall(converted))
-    total_chars = len([c for c in converted if c.strip()])
-    
-    if total_chars == 0:
-        return {"quality": "empty", "devanagari_ratio": 0}
-    
-    ratio = devanagari_chars / total_chars
-    
-    if ratio >= 0.5:
-        quality = "good"
-    elif ratio >= 0.2:
-        quality = "partial"
-    else:
-        quality = "poor"
-    
-    return {
-        "quality": quality,
-        "devanagari_ratio": round(ratio * 100, 1),
-        "devanagari_chars": devanagari_chars,
-        "total_chars": total_chars,
-    }
+    """Return a dict with devanagari_ratio (0-100) and char counts."""
+    import re
+    deva = re.compile(r"[\u0900-\u097F]")
+    chars = [c for c in converted if c.strip()]
+    if not chars:
+        return {"devanagari_ratio": 0.0, "original_length": len(original),
+                "converted_length": len(converted)}
+    ratio = sum(1 for c in chars if deva.match(c)) / len(chars) * 100
+    return {"devanagari_ratio": round(ratio, 1),
+            "original_length": len(original),
+            "converted_length": len(converted)}
+
+if __name__ == "__main__":
+    tests = [
+        ("g]kfn", "नेपाल"),
+        ("sf7df8f}+", "काठमाडौं"),
+        (";"
+         "//sf/", "सरकार"),
+    ]
+    for src, expected in tests:
+        got = preeti_to_unicode(src)
+        status = "PASS" if got == expected else f"FAIL (got {got!r})"
+        print(f"{src!r} → {got!r}: {status}")

@@ -2,6 +2,7 @@
 Main FastAPI application.
 """
 import os
+import re
 from urllib.parse import quote
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -18,6 +19,7 @@ from app.extract.image_handler import extract_image
 from app.extract.raster_pipeline import convert_to_image_pdf
 from app.logging_config import get_logger
 from app.nlp.intent_classifier import classify
+from app.extract.txt_formatter import format_as_txt
 
 logger = get_logger("TextExtract")
 
@@ -158,6 +160,73 @@ async def extract_api(
         "mode": mode,
         "meta": result,
     }
+
+
+@app.post("/api/extract-txt")
+async def extract_txt_api(
+    file: UploadFile = File(...),
+    lang: str = Form("auto"),
+    page_separators: bool = Form(True),
+    headers_footers: bool = Form(True),
+    quality_report: bool = Form(False),
+):
+    """
+    Extract text from a document and return a clean .txt file download.
+
+    The response is a UTF-8 plain-text file (Content-Type: text/plain).
+    Nepali text is fully converted to Unicode — no legacy font encoding.
+
+    Form parameters
+    ---------------
+    file            : The PDF file to extract.
+    lang            : "auto" | "eng" | "nep" | "eng+nep"
+    page_separators : Include ═══ PAGE N ═══ separators (default true).
+    headers_footers : Include [HEADER] and [FOOTER] labels (default true).
+    quality_report  : Append extraction quality summary at end (default false).
+    """
+    filename = file.filename or "document"
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(f"File type {ext} not allowed.")
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    logger.info("extract-txt: %s (%.2f MB), lang=%s", filename, size_mb, lang)
+
+    if ext == ".pdf":
+        result = await run_in_threadpool(extract_pdf, file_bytes, lang, "auto")
+    elif ext == ".docx":
+        result = await run_in_threadpool(extract_docx, file_bytes, lang, "auto")
+    else:
+        result = await run_in_threadpool(extract_image, file_bytes, lang)
+
+    txt_content = format_as_txt(
+        result,
+        include_page_separators=page_separators,
+        include_headers_footers=headers_footers,
+        include_quality_report=quality_report,
+    )
+
+    # Build safe download filename
+    base = os.path.splitext(filename)[0]
+    safe_base = re.sub(r"[^\w\-]", "_", base)[:60] or "extracted"
+    download_name = f"{safe_base}_extracted.txt"
+
+    return Response(
+        content=txt_content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{safe_base}_extracted.txt"; '
+                f"filename*=UTF-8''{quote(download_name)}"
+            )
+        },
+    )
 
 
 @app.post("/api/convert-to-image-pdf")

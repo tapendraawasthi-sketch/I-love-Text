@@ -143,15 +143,32 @@ def _convert_with_builtin(text: str) -> str:
 
 
 def force_convert_legacy(text: str, map_name: str) -> str:
-    """Convert using a specific map. Caller must ensure text needs conversion."""
+    """Convert using a specific map.  Falls back to built-in maps if npttf2utf
+    is not available or returns unchanged text."""
     if not text or not text.strip():
         return text
     if is_plain_ascii_text(text):
         return text
 
+    # Try npttf2utf first (most complete mapping)
     result = _convert_with_npttf2utf(text, map_name)
-    if result:
+    if result and result != text:
         return result
+
+    # Built-in fallbacks (always available, no external dependency)
+    if map_name in ("preeti", "ganess", "ganesh", "fontasy", "kanchan",
+                    "navjeevan", "siddhi", "vishwash"):
+        return _convert_with_builtin(text)  # uses preeti_map
+
+    if map_name == "sagarmatha":
+        from app.legacy_fonts.sagarmatha_map import sagarmatha_to_unicode
+        return sagarmatha_to_unicode(text)
+
+    if map_name in ("kantipur", "ekantipur"):
+        from app.legacy_fonts.kantipur_map import kantipur_to_unicode
+        return kantipur_to_unicode(text)
+
+    # Last resort: try Preeti (most common)
     return _convert_with_builtin(text)
 
 
