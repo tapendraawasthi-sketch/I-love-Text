@@ -284,13 +284,14 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
         block_lines: list[str] = []
         
         for line in block.get("lines", []):
-            line_parts: list[tuple[str, float]] = []  # (text, x0)
-            
+            line_parts: list[tuple[str, float, float]] = []  # (text, x0, x1)
+
             for span in line.get("spans", []):
                 font_name = span.get("font", "")
                 raw_text = span.get("text", "")
                 bbox = span.get("bbox", (0, 0, 0, 0))
                 x0 = bbox[0]
+                x1 = bbox[2]
                 
                 if not raw_text:
                     continue
@@ -306,7 +307,7 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
                 else:
                     converted_text = raw_text
                 
-                line_parts.append((converted_text, x0))
+                line_parts.append((converted_text, x0, x1))
             
             if not line_parts:
                 continue
@@ -315,12 +316,23 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
             line_parts.sort(key=lambda x: x[1])
             
             line_text = ""
-            for i, (text, x0) in enumerate(line_parts):
+            for i, (text, x0, x1) in enumerate(line_parts):
                 if i == 0:
                     line_text = text
                 else:
-                    prev_x0 = line_parts[i - 1][1]
-                    gap = x0 - prev_x0
+                    prev_x1 = line_parts[i - 1][2]
+                    # True visual gap: start of this span to END of the
+                    # previous span. Using x0-to-x0 (start-to-start)
+                    # instead of x0-to-x1 (end-to-start) was a real bug:
+                    # it included the width of the previous span, so any
+                    # multi-character span wider than the ~5pt threshold
+                    # (e.g. a two-character consonant+matra run such as
+                    # "कु") caused a false space to be inserted before the
+                    # next span even when the two spans were visually
+                    # touching -- producing exactly the "कु ल" (should be
+                    # "कुल") mid-word space corruption seen in real
+                    # extracted documents.
+                    gap = x0 - prev_x1
                     # Large gap = tab (table column), small gap = space
                     if gap > 50:
                         line_text += "\t" + text

@@ -88,25 +88,61 @@ def corruption_score(text: str) -> float:
 
 
 def repair_corrupted_devanagari(text: str) -> str:
-    """Repair OCR/encoding corruption using context templates and domain lexicon."""
+    """Repair OCR/encoding corruption using context templates and domain lexicon.
+
+    IMPORTANT SCOPING RULE: the domain-lexicon distance-match below is only
+    ever applied to a word that itself contained a genuine corruption
+    marker (private-use-area char, replacement char, or a geometric-shape
+    OCR-garbage placeholder such as [square]/[filled square]) -- never to
+    ordinary words elsewhere in the same text block.
+
+    A previous version of this function ran the lexicon distance-match
+    against *every* Devanagari word >= 3 characters in the entire text,
+    as soon as `corruption_score(text) > 0` anywhere in that text (the
+    caller-side gate in ai_corrector.py / nepali_postprocess.py). Since
+    `corruption_score` can be a tiny positive number from a single stray
+    corruption character in an otherwise-clean multi-thousand-character
+    document, this meant one stray OCR artifact anywhere in the page
+    triggered force-replacement of hundreds of unrelated, perfectly
+    correct words (proper nouns, place names, English loanword
+    transliterations, technical terms) with whichever of the ~28
+    DOMAIN_LEXICON entries happened to be closest by consonant-skeleton
+    edit distance -- producing exactly the kind of "नियम"/"ऐन"/"दफा"/
+    "मिति"/"फैसला" noise flooding real documents. Only words that
+    actually contain a corruption marker are now eligible for lexicon
+    substitution; every other word passes through unchanged.
+    """
     if not text or not text.strip():
         return ""
     out = unicodedata.normalize("NFKC", text.strip())
-    out = CORRUPTION_RE.sub("", out)
     for pattern, repl in CONTEXT_REPAIRS:
         out = pattern.sub(repl, out)
 
     parts = re.split(r"(\s+|[।.،,;:!?]+)", out)
     repaired: list[str] = []
     for part in parts:
-        if not DEVANAGARI_RE.search(part) or len(part.strip()) < 3:
+        has_marker = bool(CORRUPTION_RE.search(part))
+        # Strip corruption-marker characters from this part regardless of
+        # whether we go on to lexicon-match it, so garbage glyphs never
+        # survive into the output.
+        cleaned = CORRUPTION_RE.sub("", part)
+
+        if not has_marker:
+            # This word/segment was never actually flagged as corrupted --
+            # leave it completely untouched (this is the fix: previously
+            # every word here was still lexicon-matched).
             repaired.append(part)
             continue
-        if re.fullmatch(r"[२०-९।.\-/]+", part.strip()):
-            repaired.append(part)
+
+        if not DEVANAGARI_RE.search(cleaned) or len(cleaned.strip()) < 3:
+            repaired.append(cleaned)
             continue
-        skel = _consonant_skeleton(part)
-        best, best_dist = part, 999
+        if re.fullmatch(r"[२०-९।.\-/]+", cleaned.strip()):
+            repaired.append(cleaned)
+            continue
+
+        skel = _consonant_skeleton(cleaned)
+        best, best_dist = cleaned, 999
         for lex in DOMAIN_LEXICON:
             lex_skel = _consonant_skeleton(lex)
             if not lex_skel:
@@ -116,7 +152,7 @@ def repair_corrupted_devanagari(text: str) -> str:
             if dist <= threshold and dist < best_dist:
                 best_dist = dist
                 best = lex
-        repaired.append(best if best_dist < 999 else part)
+        repaired.append(best if best_dist < 999 else cleaned)
     out = "".join(repaired)
     return re.sub(r"\s+", " ", out).strip()
 
