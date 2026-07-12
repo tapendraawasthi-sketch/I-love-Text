@@ -4,102 +4,146 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TextExtract &mdash; English & Nepali</title>
-    
+
     <!-- Noto Sans Devanagari for rendering Nepali text properly -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
-    
-    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p><strong>Maximum Accuracy OCR</strong> — Adaptive multi-pass: fast path for easy pages, extra processing only for difficult ones. Parallel workers, 400+ DPI, local adaptive thresholding.</p>
+            <p>Two dedicated tools for two different kinds of documents — pick the one that matches your file.</p>
             <p id="device-badge" class="device-badge">Detecting your device…</p>
         </header>
 
+        <!-- Global Error Banner -->
+        <div id="error-banner" class="hidden">
+            <span id="error-message"></span>
+            <button type="button" class="close-btn" onclick="document.getElementById('error-banner').classList.add('hidden')">&times;</button>
+        </div>
+
         <main>
-            <!-- Error Banner -->
-            <div id="error-banner" class="hidden">
-                <span id="error-message"></span>
-                <button type="button" class="close-btn" onclick="document.getElementById('error-banner').classList.add('hidden')">&times;</button>
-            </div>
-
-            <!-- Upload Zone -->
-            <div id="upload-zone" class="upload-zone" tabindex="0">
-                <input type="file" id="file-input" accept=".pdf,.docx,.png,.jpg,.jpeg,.tiff,.bmp,.webp" hidden>
-                <div class="upload-content">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
-                    <p class="upload-hint">PDF, DOCX, images — up to 100 MB · Adaptive OCR (fast for easy pages, thorough for difficult ones)</p>
-                </div>
-                <div id="file-info" class="file-info hidden">
-                    <span id="file-name"></span>
-                    <span id="file-size"></span>
-                </div>
-            </div>
-
-            <!-- Progress -->
-            <div id="progress-section" class="progress-section hidden">
-                <div class="progress-track">
-                    <div id="progress-fill" class="progress-fill"></div>
-                </div>
-                <p id="progress-label" class="progress-label">Starting…</p>
-            </div>
-
-            <!-- Controls -->
-            <div class="controls">
-                <div class="input-group">
-                    <label for="lang-select">Language</label>
-                    <select id="lang-select">
-                        <option value="nep" selected>Nepali + English</option>
-                        <option value="eng">English Only</option>
-                        <option value="auto">Auto Detect</option>
-                    </select>
-                </div>
-                
-                <button id="extract-btn" disabled>
-                    <span class="btn-text">Extract Text (Max Quality)</span>
-                    <span class="spinner hidden"></span>
-                </button>
-                
-                <button id="convert-pdf-btn" class="secondary-btn" disabled>
-                    Convert to Image PDF
-                </button>
-
-                <button id="ai-convert-btn" disabled>
-                    <span class="ai-btn-icon">✦</span>
-                    <span class="ai-btn-text">Font → Unicode Converter</span>
-                    <span class="ai-spinner hidden"></span>
-                </button>
-            
-            </div>
-
-            <p class="feature-hint">
-                <strong>Three options:</strong><br>
-                1) <strong>Extract Text</strong> — OCR in your browser (good for most documents)<br>
-                2) <strong>Convert to Image PDF</strong> — For best accuracy, convert then upload to ChatGPT/Claude/Gemini<br>
-                3) <strong>✦ Font → Unicode Converter</strong> — For PDFs with embedded text (Preeti, Kantipur, etc.): reads the text layer directly and converts to Unicode. More accurate than OCR for these documents. Use Extract Text for scanned/image PDFs.
-            </p>
-
-            <!-- Results -->
-            <div id="result-section" class="result-section hidden">
-                <div class="result-header">
-                    <h2>Extracted Text</h2>
-                    <div class="result-actions">
-                        <button id="copy-btn" class="secondary-btn">Copy</button>
-                        <button id="download-btn" class="secondary-btn">Download .txt</button>
+            <!-- ============================================================ -->
+            <!-- SECTION A — Scan / Image OCR (runs entirely in your browser)  -->
+            <!-- ============================================================ -->
+            <section class="feature-card ocr-card">
+                <div class="feature-card-header">
+                    <div class="feature-icon ocr-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                    </div>
+                    <div>
+                        <h2>Scan / Image OCR</h2>
+                        <p class="feature-subtitle">For scanned or photographed documents with no real text layer — runs entirely in your browser, nothing is uploaded anywhere.</p>
                     </div>
                 </div>
-                
-                <textarea id="result-text" readonly lang="ne" placeholder="Extracted text will appear here..."></textarea>
-                
-                <div class="meta-panel" id="meta-panel">
-                    <!-- Meta info populated by JS -->
+
+                <div id="upload-zone-ocr" class="upload-zone" tabindex="0">
+                    <input type="file" id="file-input-ocr" accept=".pdf,.docx,.png,.jpg,.jpeg,.tiff,.bmp,.webp" hidden>
+                    <div class="upload-content">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <p class="upload-text"><strong>Choose a file</strong> or drag it here</p>
+                        <p class="upload-hint">PDF, DOCX, images — up to 100 MB · Adaptive OCR (fast for easy pages, thorough for difficult ones)</p>
+                    </div>
+                    <div id="file-info-ocr" class="file-info hidden">
+                        <span id="file-name-ocr"></span>
+                        <span id="file-size-ocr"></span>
+                    </div>
                 </div>
-            </div>
+
+                <div id="progress-section-ocr" class="progress-section hidden">
+                    <div class="progress-track"><div id="progress-fill-ocr" class="progress-fill"></div></div>
+                    <p id="progress-label-ocr" class="progress-label">Starting…</p>
+                </div>
+
+                <div class="controls">
+                    <div class="input-group">
+                        <label for="lang-select">Language</label>
+                        <select id="lang-select">
+                            <option value="nep" selected>Nepali + English</option>
+                            <option value="eng">English Only</option>
+                            <option value="auto">Auto Detect</option>
+                        </select>
+                    </div>
+
+                    <button id="extract-btn" disabled>
+                        <span class="btn-text">Extract Text (Max Quality)</span>
+                        <span class="spinner hidden"></span>
+                    </button>
+
+                    <button id="convert-pdf-btn" class="secondary-btn" disabled>
+                        Convert to Image PDF
+                    </button>
+                </div>
+                <p class="feature-footnote">"Convert to Image PDF" flattens pages into images with no selectable text — useful if you plan to upload the result to ChatGPT, Claude, or Gemini for reading instead.</p>
+
+                <div id="result-section-ocr" class="result-section hidden">
+                    <div class="result-header">
+                        <h2>Extracted Text</h2>
+                        <div class="result-actions">
+                            <button id="copy-btn-ocr" class="secondary-btn">Copy</button>
+                            <button id="download-btn-ocr" class="secondary-btn">Download .txt</button>
+                        </div>
+                    </div>
+                    <textarea id="result-text-ocr" lang="ne" placeholder="Extracted text will appear here — you can edit it directly before copying or downloading."></textarea>
+                    <div class="meta-panel" id="meta-panel-ocr"></div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- SECTION B — Nepali Font → Unicode Converter (.txt) (backend)  -->
+            <!-- ============================================================ -->
+            <section class="feature-card nepali-card">
+                <div class="feature-card-header">
+                    <div class="feature-icon nepali-icon">✦</div>
+                    <div>
+                        <h2>Nepali Font → Unicode Converter <span class="format-pill">.txt</span></h2>
+                        <p class="feature-subtitle">For PDFs that already have a real text layer (Preeti, Kantipur, Sagarmatha, or standard Unicode fonts). This is <strong>not OCR</strong> — it reads the embedded text directly and converts the font encoding, which is significantly more accurate than OCR for this specific case. Best for typed government notices, legal documents, gazettes, and annual reports.</p>
+                    </div>
+                </div>
+
+                <div id="upload-zone-np" class="upload-zone nepali-upload-zone" tabindex="0">
+                    <input type="file" id="file-input-np" accept=".pdf" hidden>
+                    <div class="upload-content">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <p class="upload-text"><strong>Choose a PDF</strong> or drag it here</p>
+                        <p class="upload-hint">PDF only, up to 100 MB · Detects font automatically · No OCR needed</p>
+                    </div>
+                    <div id="file-info-np" class="file-info hidden">
+                        <span id="file-name-np"></span>
+                        <span id="file-size-np"></span>
+                    </div>
+                </div>
+
+                <div id="progress-section-np" class="progress-section hidden">
+                    <div class="progress-track"><div id="progress-fill-np" class="progress-fill nepali-fill"></div></div>
+                    <p id="progress-label-np" class="progress-label">Starting…</p>
+                </div>
+
+                <div class="controls">
+                    <button id="ai-convert-btn" disabled>
+                        <span class="ai-btn-icon">✦</span>
+                        <span class="ai-btn-text">Convert to Unicode (.txt)</span>
+                        <span class="ai-spinner hidden"></span>
+                    </button>
+                </div>
+
+                <div id="result-section-np" class="result-section hidden">
+                    <div class="result-header">
+                        <h2>Converted Text</h2>
+                        <div class="result-actions">
+                            <button id="copy-btn-np" class="secondary-btn">Copy</button>
+                            <button id="download-btn-np" class="secondary-btn">Download .txt</button>
+                        </div>
+                    </div>
+                    <p id="result-summary-np" class="result-summary hidden"></p>
+                    <textarea id="result-text-np" lang="ne" placeholder="Converted Unicode text will appear here — you can edit it directly before copying or downloading."></textarea>
+                    <div class="meta-panel" id="meta-panel-np"></div>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -109,8 +153,8 @@
     <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="preeti.js"></script>
-    <script src="image-compress.js?v=8"></script>
-    <script src="ocr-client.js?v=8"></script>
-    <script src="app.js?v=8"></script>
+    <script src="image-compress.js?v=9"></script>
+    <script src="ocr-client.js?v=9"></script>
+    <script src="app.js?v=9"></script>
 </body>
 </html>
