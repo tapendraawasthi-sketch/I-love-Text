@@ -17,7 +17,24 @@ logger = logging.getLogger("LegacyFontConverter")
 
 _PLAIN_ASCII_RE = re.compile(r"^[a-zA-Z0-9._:/\-\s]+$")
 _PREETI_DATE_RE = re.compile(r"^[@)!#$%&(*.+^=\s\d]+$")
+# Preeti date codes always contain at least one of the actual Preeti
+# "symbol key" characters below -- a string made up of nothing but plain
+# digits/whitespace/separators (e.g. "10", "500", "12/34") is just a plain
+# number, not a Preeti date, even though it also matches _PREETI_DATE_RE's
+# broader character class. Without this check, ordinary numeric table
+# cells (extremely common in financial/legal documents) were being
+# misdetected as legacy-encoded and corrupted by Preeti conversion.
+_PREETI_SYMBOL_CHARS = set("@)!#$%&(*+^=")
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
+
+def _looks_like_preeti_date(stripped: str) -> bool:
+    """True only for strings that match the Preeti-date character class
+    AND contain at least one actual Preeti symbol key character -- not
+    plain digit/punctuation strings like "10" or "2081-01-01"."""
+    if not _PREETI_DATE_RE.match(stripped):
+        return False
+    return any(c in _PREETI_SYMBOL_CHARS for c in stripped)
 
 # Try to import npttf2utf (API changed in 0.3.x)
 _HAS_NPTTF2UTF = False
@@ -65,7 +82,9 @@ def is_plain_ascii_text(text: str) -> bool:
         return True
 
     # Preeti-encoded dates like @)#!.$.!* must NOT be treated as plain ASCII.
-    if _PREETI_DATE_RE.match(stripped):
+    # (Plain digit strings like "10" or "2081-01-01" are NOT Preeti dates --
+    # see _looks_like_preeti_date.)
+    if _looks_like_preeti_date(stripped):
         return False
 
     if "www." in stripped or "http://" in stripped or "https://" in stripped:
@@ -105,7 +124,7 @@ def is_legacy_encoded(text: str) -> bool:
     if deva_ratio >= 0.50 and ascii_ratio < 0.15:
         return False
 
-    if _PREETI_DATE_RE.match(text.strip()):
+    if _looks_like_preeti_date(text.strip()):
         return True
 
     if is_likely_preeti(text):
@@ -124,7 +143,7 @@ def _convert_with_npttf2utf(text: str, map_name: str) -> str | None:
         result = mapper.map_to_unicode(text, from_font=from_font)
         if result and result != text:
             quality = conversion_quality(text, result)
-            if quality["devanagari_ratio"] >= 10 or _PREETI_DATE_RE.match(text.strip()):
+            if quality["devanagari_ratio"] >= 10 or _looks_like_preeti_date(text.strip()):
                 return result
             logger.warning(
                 "npttf2utf low quality (%.1f%% Devanagari) for map %s",
