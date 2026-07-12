@@ -584,7 +584,15 @@
 
   async function ocrWithWorker(worker, dataUrl) {
     const result = await worker.recognize(dataUrl);
-    const text = extractTextFromWords(result.data.words) || (result.data.text || '').trim();
+    let text = extractTextFromWords(result.data.words) || (result.data.text || '').trim();
+    // Apply safe, universal Nepali/Devanagari normalization (NFC, zero-
+    // width stripping, doubled combining-mark collapse, whitespace
+    // cleanup) -- see nepali-postprocess.js for why this exists: the
+    // client-side OCR path previously returned raw Tesseract output with
+    // none of the backend's safety nets applied.
+    if (global.NepaliPostprocess?.normalize) {
+      text = global.NepaliPostprocess.normalize(text);
+    }
     return {
       text,
       confidence: Math.round(result.data.confidence || 0),

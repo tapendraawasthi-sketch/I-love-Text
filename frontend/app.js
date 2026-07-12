@@ -128,6 +128,71 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // ------------------------------------------------------------------
+    // Conversion history — last 5 results per section, stored locally in
+    // the browser only (never sent anywhere). Lets someone processing
+    // several documents in one sitting get back a previous result after
+    // switching files, without needing to re-run extraction.
+    // ------------------------------------------------------------------
+    const HISTORY_LIMIT = 5;
+
+    function wireHistory({ storageKey, panelEl, toggleBtn, listEl, countEl, textareaEl, resultSectionEl }) {
+        function load() {
+            try {
+                const raw = localStorage.getItem(storageKey);
+                return raw ? JSON.parse(raw) : [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        function save(entries) {
+            try {
+                localStorage.setItem(storageKey, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+            } catch (_) { /* storage full or unavailable — history is a nice-to-have, fail silently */ }
+        }
+
+        function render() {
+            const entries = load();
+            listEl.innerHTML = '';
+            if (!entries.length) {
+                panelEl.classList.add('hidden');
+                return;
+            }
+            panelEl.classList.remove('hidden');
+            countEl.textContent = `(${entries.length})`;
+            entries.forEach((entry, i) => {
+                const li = document.createElement('li');
+                const when = new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                li.innerHTML = `<span class="history-name">${entry.name}</span><span class="history-time">${when}</span>`;
+                li.title = 'Click to restore this result';
+                li.addEventListener('click', () => {
+                    textareaEl.value = entry.text;
+                    resultSectionEl.classList.remove('hidden');
+                    resultSectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+                listEl.appendChild(li);
+            });
+        }
+
+        toggleBtn.addEventListener('click', () => {
+            listEl.classList.toggle('hidden');
+            toggleBtn.classList.toggle('expanded');
+        });
+
+        render();
+
+        return {
+            add(name, text) {
+                if (!text) return;
+                const entries = load();
+                entries.unshift({ name, text, ts: Date.now() });
+                save(entries);
+                render();
+            },
+        };
+    }
+
     // ==================================================================
     // SECTION A — Scan / Image OCR (client-side, Tesseract.js)
     // ==================================================================
@@ -153,6 +218,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const progressSection = document.getElementById('progress-section-ocr');
         const progressFill = document.getElementById('progress-fill-ocr');
         const progressLabel = document.getElementById('progress-label-ocr');
+
+        const history = wireHistory({
+            storageKey: 'textextract_history_ocr',
+            panelEl: document.getElementById('history-panel-ocr'),
+            toggleBtn: document.getElementById('history-toggle-ocr'),
+            listEl: document.getElementById('history-list-ocr'),
+            countEl: document.getElementById('history-count-ocr'),
+            textareaEl: resultText,
+            resultSectionEl: resultSection,
+        });
 
         let currentFile = null;
 
@@ -326,6 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const result = await extractViaBrowser(currentFile, lang, onProgress);
                 showResult(result);
+                history.add(currentFile.name, result.text);
             } catch (err) {
                 showError(err.message || 'Extraction failed.');
             } finally {
@@ -369,6 +445,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const progressSection = document.getElementById('progress-section-np');
         const progressFill = document.getElementById('progress-fill-np');
         const progressLabel = document.getElementById('progress-label-np');
+
+        const history = wireHistory({
+            storageKey: 'textextract_history_np',
+            panelEl: document.getElementById('history-panel-np'),
+            toggleBtn: document.getElementById('history-toggle-np'),
+            listEl: document.getElementById('history-list-np'),
+            countEl: document.getElementById('history-count-np'),
+            textareaEl: resultText,
+            resultSectionEl: resultSection,
+        });
 
         let currentFile = null;
 
@@ -468,6 +554,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem(metaPanel, 'Quality score', qualityScore, parsePercent(qualityScore));
                 addMetaItem(metaPanel, 'AI correction', aiApplied ? `✓ Applied (${aiIterations} pass)` : (aiSkipped ? `Skipped (${aiSkipped.replace(/_/g, ' ')})` : 'Skipped (mechanical conversion used)'));
                 addMetaItem(metaPanel, 'Output', 'Downloaded as .txt');
+
+                history.add(currentFile.name, text);
 
                 resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
             } catch (err) {

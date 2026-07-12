@@ -153,10 +153,22 @@ def repair_devanagari_unicode(text: str) -> str:
 
 
 def _fix_double_matras(text: str) -> str:
-    """Remove duplicate consecutive matras."""
+    """Remove duplicate consecutive combining marks.
+
+    Originally this only covered post-base vowel signs (matras, U+093E-
+    U+094C). A forensic audit of a real production document found doubled
+    chandrabindu/anusvara/visarga (U+0901 ँ, U+0902 ं, U+0903 ः) that this
+    function did NOT catch at all -- e.g. "पूँँजीगत" (should be "पूँजीगत"),
+    "संंकलन" (should be "संकलन"), "अन्तःःशुल्क" (should be "अन्तःशुल्क").
+    Unlike full matras, these three marks never legitimately repeat back
+    to back in standard Nepali orthography, so collapsing any run of 2+
+    identical consecutive occurrences to a single one is always safe.
+    """
     matra_codepoints = "".join(chr(cp) for cp in _DEVANAGARI_MATRAS)
-    # Remove consecutive duplicate matras
-    pattern = f"([{re.escape(matra_codepoints)}])\\1+"
+    nasalization_marks = "\u0901\u0902\u0903"  # ँ ं ः
+    all_codepoints = matra_codepoints + nasalization_marks
+    # Remove consecutive duplicate marks (matras or nasalization marks)
+    pattern = f"([{re.escape(all_codepoints)}])\\1+"
     return re.sub(pattern, r"\1", text)
 
 

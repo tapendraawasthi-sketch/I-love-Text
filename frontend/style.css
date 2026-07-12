@@ -473,6 +473,75 @@ textarea:focus {
     background: var(--nepali-accent);
 }
 
+/* ── Conversion history ──────────────────────────────────────────── */
+.history-panel {
+    margin-top: 1rem;
+}
+
+.history-toggle {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.6rem 1rem;
+    border-radius: var(--radius);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.history-toggle:hover {
+    background: #f1f5f9;
+}
+
+.history-toggle .chev {
+    transition: transform 0.15s ease;
+}
+
+.history-toggle.expanded .chev {
+    transform: rotate(180deg);
+}
+
+.history-list {
+    list-style: none;
+    margin-top: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.history-list li {
+    padding: 0.6rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+}
+
+.history-list li:last-child {
+    border-bottom: none;
+}
+
+.history-list li:hover {
+    background: #f8fafc;
+}
+
+.history-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
+}
+
+.history-time {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
 .ai-btn-icon {
     font-size: 1.1rem;
     line-height: 1;

@@ -91,6 +91,11 @@
                     <textarea id="result-text-ocr" lang="ne" placeholder="Extracted text will appear here — you can edit it directly before copying or downloading."></textarea>
                     <div class="meta-panel" id="meta-panel-ocr"></div>
                 </div>
+
+                <div id="history-panel-ocr" class="history-panel hidden">
+                    <button type="button" id="history-toggle-ocr" class="history-toggle">Recent conversions <span id="history-count-ocr"></span> <span class="chev">▾</span></button>
+                    <ul id="history-list-ocr" class="history-list hidden"></ul>
+                </div>
             </section>
 
             <!-- ============================================================ -->
@@ -143,6 +148,11 @@
                     <textarea id="result-text-np" lang="ne" placeholder="Converted Unicode text will appear here — you can edit it directly before copying or downloading."></textarea>
                     <div class="meta-panel" id="meta-panel-np"></div>
                 </div>
+
+                <div id="history-panel-np" class="history-panel hidden">
+                    <button type="button" id="history-toggle-np" class="history-toggle">Recent conversions <span id="history-count-np"></span> <span class="chev">▾</span></button>
+                    <ul id="history-list-np" class="history-list hidden"></ul>
+                </div>
             </section>
         </main>
     </div>
@@ -154,6 +164,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="preeti.js"></script>
     <script src="image-compress.js?v=9"></script>
+    <script src="nepali-postprocess.js?v=1"></script>
     <script src="ocr-client.js?v=9"></script>
     <script src="app.js?v=9"></script>
 </body>
