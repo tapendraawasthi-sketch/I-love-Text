@@ -12,25 +12,26 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.intelligence.nepal_knowledge_base import correct_word
+
 CORRUPTION_RE = re.compile(
     r"[\uFFFD\uFFFE\uFFFF\u25A1\u25A0\u25AB\u25AA\u25FB\u25FC\u2610\u2611\u2612"
     r"□▯▢■◻◼⬜⬛\uE000-\uF8FF]"
 )
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
-# Legal, government, and common document vocabulary
-DOMAIN_LEXICON = [
-    "नियमवाली", "नियमावली", "ऐन", "दफा", "नियम", "संशोधन", "प्रारम्भ", "संक्षिप्त", "नाम",
-    "राजपत्र", "मिति", "प्रकाशित", "सरकारी", "गजेट", "अधिकार", "प्रावधान", "परिभाषा",
-    "आयकर", "कर", "उद्योग", "पेट्रोलियम", "विनियम", "कार्यविधि", "निर्देशिका",
-    "सम्झौता", "करार", "निर्णय", "आदेश", "फैसला", "अनुसूची", "परिच्छेद",
-]
+# Minimum confidence (see app.intelligence.nepal_knowledge_base.correct_word)
+# required before we accept a lexicon substitution for a genuinely corrupted
+# word. Below this, we prefer to leave the marker-stripped original in place
+# -- a word that still looks slightly "off" is something a human reviewer
+# can spot and fix, whereas a confident-but-wrong substitution reads as
+# fluent, correct Nepali and is far more likely to go unnoticed.
+_MIN_CORRECTION_CONFIDENCE = 65.0
 
 CONTEXT_REPAIRS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(
-            r"(पेट्रोलियम\s+उद्योग\s*\(\s*आयकर\s*\))\s*[^\u0900-\u097F\u0964।,]{0,12}"
-            r"[\u0900-\u097F]{0,12}\s*[,，]\s*(२०\d{2})"
+            r"(पेट्रोलियम\s+उद्योग\s*\(\s*आयकर\s*\))[^,，]{0,20}[,，]\s*(२०\d{2})"
         ),
         r"\1 नियमवाली, \2",
     ),
@@ -58,7 +59,17 @@ CONTEXT_REPAIRS: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
-DomainHint = Literal["legal", "general"]
+DomainHint = Literal["legal", "accounting", "banking", "common", "general"]
+
+# Map the coarse document-type labels used elsewhere in the pipeline (see
+# app.nlp.ai_corrector._detect_document_type) to the knowledge-base domain
+# names used by app.intelligence.nepal_knowledge_base.correct_word(), so a
+# tax/revenue report doesn't get court-judgment vocabulary forced into it
+# and vice versa.
+_DOCUMENT_TYPE_TO_KB_DOMAIN: dict[str, str] = {
+    "Nepali law / government act": "legal",
+    "Nepali government procedure": "legal",
+}
 
 
 def _consonant_skeleton(word: str) -> str:
@@ -87,30 +98,56 @@ def corruption_score(text: str) -> float:
     return min(1.0, len(matches) / max(len(text) / 20, 1))
 
 
-def repair_corrupted_devanagari(text: str) -> str:
-    """Repair OCR/encoding corruption using context templates and domain lexicon.
+def repair_corrupted_devanagari(text: str, domain: str | None = None) -> str:
+    """Repair OCR/encoding corruption using context templates and the
+    Nepal Knowledge Base (app.intelligence.nepal_knowledge_base).
 
-    IMPORTANT SCOPING RULE: the domain-lexicon distance-match below is only
+    IMPORTANT SCOPING RULE: the knowledge-base distance-match below is only
     ever applied to a word that itself contained a genuine corruption
     marker (private-use-area char, replacement char, or a geometric-shape
     OCR-garbage placeholder such as [square]/[filled square]) -- never to
     ordinary words elsewhere in the same text block.
 
-    A previous version of this function ran the lexicon distance-match
-    against *every* Devanagari word >= 3 characters in the entire text,
-    as soon as `corruption_score(text) > 0` anywhere in that text (the
-    caller-side gate in ai_corrector.py / nepali_postprocess.py). Since
+    A previous version of this function ran a distance-match against a
+    hard-coded 28-word DOMAIN_LEXICON, applied to *every* Devanagari word
+    >= 3 characters in the entire text as soon as
+    `corruption_score(text) > 0` anywhere in that text (the caller-side
+    gate in ai_corrector.py / nepali_postprocess.py). Since
     `corruption_score` can be a tiny positive number from a single stray
     corruption character in an otherwise-clean multi-thousand-character
     document, this meant one stray OCR artifact anywhere in the page
     triggered force-replacement of hundreds of unrelated, perfectly
     correct words (proper nouns, place names, English loanword
-    transliterations, technical terms) with whichever of the ~28
-    DOMAIN_LEXICON entries happened to be closest by consonant-skeleton
-    edit distance -- producing exactly the kind of "नियम"/"ऐन"/"दफा"/
-    "मिति"/"फैसला" noise flooding real documents. Only words that
-    actually contain a corruption marker are now eligible for lexicon
-    substitution; every other word passes through unchanged.
+    transliterations, technical terms) with whichever of the ~28 lexicon
+    entries happened to be closest by consonant-skeleton edit distance --
+    producing exactly the "नियम"/"ऐन"/"दफा"/"मिति"/"फैसला" noise flooding
+    real documents. Only words that actually contain a corruption marker
+    are eligible for lexicon substitution; every other word passes through
+    unchanged.
+
+    This version additionally fixes two further weaknesses found in that
+    same audit:
+      1. It now draws on app.intelligence.nepal_knowledge_base's ~250-word,
+         domain-tagged vocabulary (legal / accounting / banking / common)
+         instead of a separate, much smaller 28-word list -- so genuinely
+         corrupted words have a much better chance of matching the
+         *correct* word rather than the nearest word in an unrelated,
+         tiny, hand-picked list.
+      2. It only accepts a substitution when correct_word() returns at
+         least _MIN_CORRECTION_CONFIDENCE confidence. A corrupted word
+         with no confident match is left as its marker-stripped original
+         rather than force-replaced with a low-confidence guess -- a
+         visibly "off" word is something a human reviewer can catch;
+         a confident-but-wrong replacement reads as fluent, correct
+         Nepali and is far more dangerous because it's unlikely to be
+         noticed.
+
+    `domain` (one of "legal", "accounting", "banking", "common", or None)
+    restricts which vocabulary subset genuinely-corrupted words are
+    matched against, so a tax/revenue report isn't corrected against
+    court-judgment vocabulary and vice versa. Pass None to match against
+    the full combined vocabulary (used when the document type is unknown
+    or mixed).
     """
     if not text or not text.strip():
         return ""
@@ -141,18 +178,13 @@ def repair_corrupted_devanagari(text: str) -> str:
             repaired.append(cleaned)
             continue
 
-        skel = _consonant_skeleton(cleaned)
-        best, best_dist = cleaned, 999
-        for lex in DOMAIN_LEXICON:
-            lex_skel = _consonant_skeleton(lex)
-            if not lex_skel:
-                continue
-            dist = _levenshtein(skel, lex_skel)
-            threshold = max(2, int(len(lex_skel) * 0.45))
-            if dist <= threshold and dist < best_dist:
-                best_dist = dist
-                best = lex
-        repaired.append(best if best_dist < 999 else cleaned)
+        corrected, confidence, _source = correct_word(cleaned.strip(), domain=domain)
+        if confidence >= _MIN_CORRECTION_CONFIDENCE:
+            repaired.append(corrected)
+        else:
+            # No confident match -- keep the marker-stripped original
+            # rather than forcing a low-confidence guess.
+            repaired.append(cleaned)
     out = "".join(repaired)
     return re.sub(r"\s+", " ", out).strip()
 
@@ -196,13 +228,15 @@ def analyze_clause(clause: str) -> ClauseAnalysis:
     return ClauseAnalysis(text=clause, domain_hint=domain, is_question=is_q)
 
 
-def analyze_sentence_meaning(raw_text: str) -> SentenceMeaning:
+def analyze_sentence_meaning(raw_text: str, domain: str | None = None) -> SentenceMeaning:
     original = (raw_text or "").strip()
     has_dev = bool(DEVANAGARI_RE.search(original))
     needs_repair = has_dev and (
         bool(CORRUPTION_RE.search(original)) or corruption_score(original) > 0
     )
-    repaired = repair_corrupted_devanagari(original) if needs_repair else original
+    if domain is None and _LEGAL_MARKERS.search(original):
+        domain = "legal"
+    repaired = repair_corrupted_devanagari(original, domain=domain) if needs_repair else original
     work = repaired or original
     clauses = [analyze_clause(c) for c in segment_clauses(work)]
 

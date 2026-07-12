@@ -22,7 +22,11 @@ from typing import Any
 from langchain_ollama import ChatOllama
 
 from app.extract.direct_extract import extract_document_high_accuracy, score_text_quality
-from app.nlp.nepali_sentence_intelligence import corruption_score, repair_corrupted_devanagari
+from app.nlp.nepali_sentence_intelligence import (
+    corruption_score,
+    repair_corrupted_devanagari,
+    _DOCUMENT_TYPE_TO_KB_DOMAIN,
+)
 from app.logging_config import get_logger
 
 logger = get_logger("AICorrector")
@@ -140,7 +144,9 @@ def _apply_rule_repairs(text: str) -> str:
     if not text:
         return text
     if corruption_score(text) > 0:
-        return repair_corrupted_devanagari(text)
+        doc_type = _detect_document_type(text)
+        domain = _DOCUMENT_TYPE_TO_KB_DOMAIN.get(doc_type)
+        return repair_corrupted_devanagari(text, domain=domain)
     return text
 
 
