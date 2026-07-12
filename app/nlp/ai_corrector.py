@@ -270,6 +270,8 @@ def process_pdf_smart(
             "quality": quality,
             "method": result["method"],
             "ai_skipped_reason": "no_text_layer",
+            "tables_detected": result.get("tables_detected", 0),
+            "tables_by_method": result.get("tables_by_method", {}),
         }
 
     ai_enabled = (
@@ -293,6 +295,8 @@ def process_pdf_smart(
             "quality": quality,
             "method": result["method"],
             "ai_skipped_reason": "ai_disabled",
+            "tables_detected": result.get("tables_detected", 0),
+            "tables_by_method": result.get("tables_by_method", {}),
         }
 
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -311,4 +315,6 @@ def process_pdf_smart(
         "quality": score_text_quality(final_text),
         "method": "direct_font_conversion+ai" if ai_applied else result["method"],
         "ai_skipped_reason": skip_reason,
+        "tables_detected": result.get("tables_detected", 0),
+        "tables_by_method": result.get("tables_by_method", {}),
     }

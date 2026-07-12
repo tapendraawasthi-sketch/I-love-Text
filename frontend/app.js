@@ -521,6 +521,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const confidence = resp.headers.get('X-Confidence') || '?';
                 const qualityScore = resp.headers.get('X-Quality-Score') || '?';
                 const method = resp.headers.get('X-Method') || 'direct_font_conversion';
+                const tablesDetected = parseInt(resp.headers.get('X-Tables-Detected') || '0', 10);
+                const tablesBorderless = parseInt(resp.headers.get('X-Tables-Borderless') || '0', 10);
 
                 const blob = await resp.blob();
                 setProgress(progressFill, progressLabel, 100, 100, 'Done! Downloading…');
@@ -543,7 +545,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Plain-language summary line, ahead of the detailed meta panel.
                 const fontLabel = dominantFont && dominantFont !== 'unknown' ? dominantFont.toUpperCase() : 'a detected font';
                 const strategyLabel = fontStrategy.replace(/_/g, ' ');
-                resultSummary.textContent = `Detected ${fontLabel} text layer — converted directly (${strategyLabel}), no OCR needed.`;
+                let summary = `Detected ${fontLabel} text layer — converted directly (${strategyLabel}), no OCR needed.`;
+                if (tablesDetected > 0) {
+                    const borderlessNote = tablesBorderless > 0 ? ` (${tablesBorderless} without visible borders)` : '';
+                    summary += ` Found and preserved ${tablesDetected} table${tablesDetected === 1 ? '' : 's'}${borderlessNote}.`;
+                }
+                resultSummary.textContent = summary;
                 resultSummary.classList.remove('hidden');
 
                 addMetaItem(metaPanel, 'Pages', pages);
@@ -553,6 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMetaItem(metaPanel, 'Confidence', `${confidence}%`, parsePercent(confidence));
                 addMetaItem(metaPanel, 'Quality score', qualityScore, parsePercent(qualityScore));
                 addMetaItem(metaPanel, 'AI correction', aiApplied ? `✓ Applied (${aiIterations} pass)` : (aiSkipped ? `Skipped (${aiSkipped.replace(/_/g, ' ')})` : 'Skipped (mechanical conversion used)'));
+                addMetaItem(metaPanel, 'Tables detected', tablesDetected > 0 ? `${tablesDetected}${tablesBorderless > 0 ? ` (${tablesBorderless} borderless)` : ''}` : 'None');
                 addMetaItem(metaPanel, 'Output', 'Downloaded as .txt');
 
                 history.add(currentFile.name, text);

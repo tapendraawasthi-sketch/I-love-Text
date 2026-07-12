@@ -466,6 +466,12 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
 
     no_text_pages = sum(1 for r in page_results if r.get("method") == "no_text")
 
+    all_tables = [tbl for r in page_results for tbl in r.get("tables", [])]
+    tables_by_method: dict[str, int] = {}
+    for tbl in all_tables:
+        method_name = tbl.get("detected_by", "unknown")
+        tables_by_method[method_name] = tables_by_method.get(method_name, 0) + 1
+
     return {
         "text": final_text or "[No text layer found in PDF.]",
         "font_analysis": font_analysis,
@@ -475,6 +481,8 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
         "quality": quality,
         "no_text_pages": no_text_pages,
         "method": method,
+        "tables_detected": len(all_tables),
+        "tables_by_method": tables_by_method,
     }
 
 

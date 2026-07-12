@@ -412,6 +412,8 @@ async def extract_pdf_smart_txt_api(
         "X-Confidence": str(result.get("confidence", 0)),
         "X-Quality-Score": str(result.get("quality", {}).get("score", 0)),
         "X-Method": result.get("method", "direct_font_conversion"),
+        "X-Tables-Detected": str(result.get("tables_detected", 0)),
+        "X-Tables-Borderless": str(result.get("tables_by_method", {}).get("column_clustering", 0)),
     }
     if result.get("ai_skipped_reason"):
         headers["X-AI-Skipped-Reason"] = result["ai_skipped_reason"]
