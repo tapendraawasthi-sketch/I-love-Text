@@ -111,17 +111,19 @@
                 </div>
 
                 <div id="upload-zone-np" class="upload-zone nepali-upload-zone" tabindex="0">
-                    <input type="file" id="file-input-np" accept=".pdf" hidden>
+                    <input type="file" id="file-input-np" accept=".pdf" multiple hidden>
                     <div class="upload-content">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                        <p class="upload-text"><strong>Choose a PDF</strong> or drag it here</p>
-                        <p class="upload-hint">PDF only, up to 100 MB · Detects font automatically · No OCR needed</p>
+                        <p class="upload-text"><strong>Choose one or more PDFs</strong> or drag them here</p>
+                        <p class="upload-hint">PDF only, up to 100 MB each · Detects font automatically · No OCR needed · Multiple files supported</p>
                     </div>
                     <div id="file-info-np" class="file-info hidden">
                         <span id="file-name-np"></span>
                         <span id="file-size-np"></span>
                     </div>
                 </div>
+
+                <div id="batch-list-np" class="batch-list hidden"></div>
 
                 <div id="progress-section-np" class="progress-section hidden">
                     <div class="progress-track"><div id="progress-fill-np" class="progress-fill nepali-fill"></div></div>
@@ -134,6 +136,7 @@
                         <span class="ai-btn-text">Convert to Unicode (.txt)</span>
                         <span class="ai-spinner hidden"></span>
                     </button>
+                    <button id="download-all-btn-np" class="secondary-btn hidden">Download all (.zip)</button>
                 </div>
 
                 <div id="result-section-np" class="result-section hidden">
@@ -162,6 +165,7 @@
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="preeti.js"></script>
     <script src="image-compress.js?v=9"></script>
     <script src="nepali-postprocess.js?v=1"></script>

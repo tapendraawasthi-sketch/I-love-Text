@@ -542,6 +542,67 @@ textarea:focus {
     flex-shrink: 0;
 }
 
+/* ── Batch conversion (multiple files) ──────────────────────────── */
+.batch-list {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 1.25rem;
+}
+
+.batch-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.7rem 1rem;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s ease;
+}
+
+.batch-row:last-child {
+    border-bottom: none;
+}
+
+.batch-row.batch-active {
+    background: var(--nepali-bg-tint);
+}
+
+.batch-row.batch-done:hover {
+    background: #f8fafc;
+}
+
+.batch-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 65%;
+}
+
+.batch-status {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.batch-ok {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.batch-err {
+    color: #dc2626;
+    font-weight: 600;
+}
+
+#download-all-btn-np {
+    border-color: var(--nepali-border-tint);
+    color: var(--nepali-accent);
+}
+
+#download-all-btn-np:hover {
+    background: var(--nepali-bg-tint);
+}
+
 .ai-btn-icon {
     font-size: 1.1rem;
     line-height: 1;

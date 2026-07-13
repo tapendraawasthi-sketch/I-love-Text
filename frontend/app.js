@@ -79,6 +79,59 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    // Multi-file variant: validates each file, reports the whole list.
+    // Used by the Nepali section, which supports batch conversion.
+    function wireMultiUploadZone({ zoneEl, inputEl, infoEl, nameEl, sizeEl, allowedExts, onFilesChosen }) {
+        function handleFiles(fileList) {
+            hideError();
+            const files = Array.from(fileList);
+            const valid = [];
+            const problems = [];
+
+            for (const file of files) {
+                const sizeMb = file.size / (1024 * 1024);
+                const ext = getExt(file);
+                if (sizeMb > MAX_MB) {
+                    problems.push(`${file.name} is too large (${sizeMb.toFixed(1)}MB, max ${MAX_MB}MB)`);
+                } else if (!allowedExts.includes(ext)) {
+                    problems.push(`${file.name} has unsupported type ${ext}`);
+                } else {
+                    valid.push(file);
+                }
+            }
+
+            if (problems.length) showError(problems.join(' · '));
+            if (!valid.length) {
+                onFilesChosen([]);
+                return;
+            }
+
+            if (valid.length === 1) {
+                nameEl.textContent = valid[0].name;
+                sizeEl.textContent = `${(valid[0].size / (1024 * 1024)).toFixed(2)} MB`;
+            } else {
+                nameEl.textContent = `${valid.length} files selected`;
+                const totalMb = valid.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024);
+                sizeEl.textContent = `${totalMb.toFixed(2)} MB total`;
+            }
+            zoneEl.querySelector('.upload-content').classList.add('hidden');
+            infoEl.classList.remove('hidden');
+            onFilesChosen(valid);
+        }
+
+        zoneEl.addEventListener('click', () => inputEl.click());
+        zoneEl.addEventListener('dragover', (e) => { e.preventDefault(); zoneEl.classList.add('dragover'); });
+        zoneEl.addEventListener('dragleave', () => zoneEl.classList.remove('dragover'));
+        zoneEl.addEventListener('drop', (e) => {
+            e.preventDefault();
+            zoneEl.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+        });
+        inputEl.addEventListener('change', () => {
+            if (inputEl.files.length) handleFiles(inputEl.files);
+        });
+    }
+
     function setProgress(fillEl, labelEl, done, total, label) {
         const pct = total ? Math.round((done / total) * 100) : 0;
         fillEl.style.width = `${pct}%`;
@@ -434,6 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const aiSpinner = aiConvertBtn.querySelector('.ai-spinner');
         const aiText = aiConvertBtn.querySelector('.ai-btn-text');
         const aiIcon = aiConvertBtn.querySelector('.ai-btn-icon');
+        const downloadAllBtn = document.getElementById('download-all-btn-np');
 
         const resultSection = document.getElementById('result-section-np');
         const resultSummary = document.getElementById('result-summary-np');
@@ -441,6 +495,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const metaPanel = document.getElementById('meta-panel-np');
         const copyBtn = document.getElementById('copy-btn-np');
         const downloadBtn = document.getElementById('download-btn-np');
+        const batchList = document.getElementById('batch-list-np');
 
         const progressSection = document.getElementById('progress-section-np');
         const progressFill = document.getElementById('progress-fill-np');
@@ -456,18 +511,22 @@ document.addEventListener('DOMContentLoaded', () => {
             resultSectionEl: resultSection,
         });
 
-        let currentFile = null;
+        let currentFiles = [];
 
-        wireUploadZone({
+        wireMultiUploadZone({
             zoneEl: uploadZone,
             inputEl: fileInput,
             infoEl: fileInfo,
             nameEl: fileNameEl,
             sizeEl: fileSizeEl,
             allowedExts: ['.pdf'],
-            onFileChosen(file) {
-                currentFile = file;
-                aiConvertBtn.disabled = !file;
+            onFilesChosen(files) {
+                currentFiles = files;
+                aiConvertBtn.disabled = files.length === 0;
+                aiText.textContent = files.length > 1 ? `Convert ${files.length} files (.txt)` : 'Convert to Unicode (.txt)';
+                resultSection.classList.add('hidden');
+                batchList.classList.add('hidden');
+                downloadAllBtn.classList.add('hidden');
             },
         });
 
@@ -479,11 +538,70 @@ document.addEventListener('DOMContentLoaded', () => {
             progressSection.classList.add('hidden');
         }
 
-        aiConvertBtn.addEventListener('click', async () => {
-            if (!currentFile || getExt(currentFile) !== '.pdf') return;
+        async function convertOne(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('model', 'llama3');
+            formData.append('use_ai', 'false');
 
+            const resp = await fetch('/api/extract/smart-txt', { method: 'POST', body: formData });
+            if (!resp.ok) {
+                let detail = `Server error ${resp.status}`;
+                try {
+                    const err = await resp.json();
+                    detail = err.detail || err.error || detail;
+                } catch (_) { /* ignore */ }
+                throw new Error(detail);
+            }
+
+            const headers = {
+                fontStrategy: resp.headers.get('X-Font-Strategy') || 'unknown',
+                dominantFont: resp.headers.get('X-Dominant-Font') || 'unknown',
+                aiApplied: resp.headers.get('X-AI-Applied') === 'true',
+                pages: resp.headers.get('X-Pages') || '?',
+                aiIterations: resp.headers.get('X-AI-Iterations') || '?',
+                aiSkipped: resp.headers.get('X-AI-Skipped-Reason') || '',
+                confidence: resp.headers.get('X-Confidence') || '?',
+                qualityScore: resp.headers.get('X-Quality-Score') || '?',
+                method: resp.headers.get('X-Method') || 'direct_font_conversion',
+                tablesDetected: parseInt(resp.headers.get('X-Tables-Detected') || '0', 10),
+                tablesBorderless: parseInt(resp.headers.get('X-Tables-Borderless') || '0', 10),
+            };
+
+            const blob = await resp.blob();
+            const text = await new Response(blob.slice()).text();
+            return { text, headers };
+        }
+
+        function buildSummary(headers) {
+            const fontLabel = headers.dominantFont && headers.dominantFont !== 'unknown' ? headers.dominantFont.toUpperCase() : 'a detected font';
+            const strategyLabel = headers.fontStrategy.replace(/_/g, ' ');
+            let summary = `Detected ${fontLabel} text layer — converted directly (${strategyLabel}), no OCR needed.`;
+            if (headers.tablesDetected > 0) {
+                const borderlessNote = headers.tablesBorderless > 0 ? ` (${headers.tablesBorderless} without visible borders)` : '';
+                summary += ` Found and preserved ${headers.tablesDetected} table${headers.tablesDetected === 1 ? '' : 's'}${borderlessNote}.`;
+            }
+            return summary;
+        }
+
+        function downloadTextFile(filename, text) {
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // ---- Single-file conversion (unchanged UX from before batch support) ----
+        async function convertSingle(file) {
             hideError();
             resultSection.classList.add('hidden');
+            batchList.classList.add('hidden');
+            downloadAllBtn.classList.add('hidden');
             aiConvertBtn.disabled = true;
             aiIcon.classList.add('hidden');
             aiSpinner.classList.remove('hidden');
@@ -492,94 +610,141 @@ document.addEventListener('DOMContentLoaded', () => {
             setProgress(progressFill, progressLabel, 10, 100, 'Step 1 — Detecting fonts in document…');
 
             try {
-                const formData = new FormData();
-                formData.append('file', currentFile);
-                formData.append('model', 'llama3');
-                formData.append('use_ai', 'false');
-
                 setProgress(progressFill, progressLabel, 40, 100, 'Step 2 — Converting font encoding to Unicode (no OCR)…');
-
-                const resp = await fetch('/api/extract/smart-txt', { method: 'POST', body: formData });
-
+                const { text, headers } = await convertOne(file);
                 setProgress(progressFill, progressLabel, 80, 100, 'Step 3 — Finalising Unicode text…');
 
-                if (!resp.ok) {
-                    let detail = `Server error ${resp.status}`;
-                    try {
-                        const err = await resp.json();
-                        detail = err.detail || err.error || detail;
-                    } catch (_) { /* ignore */ }
-                    throw new Error(detail);
-                }
-
-                const fontStrategy = resp.headers.get('X-Font-Strategy') || 'unknown';
-                const dominantFont = resp.headers.get('X-Dominant-Font') || 'unknown';
-                const aiApplied = resp.headers.get('X-AI-Applied') === 'true';
-                const pages = resp.headers.get('X-Pages') || '?';
-                const aiIterations = resp.headers.get('X-AI-Iterations') || '?';
-                const aiSkipped = resp.headers.get('X-AI-Skipped-Reason') || '';
-                const confidence = resp.headers.get('X-Confidence') || '?';
-                const qualityScore = resp.headers.get('X-Quality-Score') || '?';
-                const method = resp.headers.get('X-Method') || 'direct_font_conversion';
-                const tablesDetected = parseInt(resp.headers.get('X-Tables-Detected') || '0', 10);
-                const tablesBorderless = parseInt(resp.headers.get('X-Tables-Borderless') || '0', 10);
-
-                const blob = await resp.blob();
+                const baseName = file.name.replace(/\.[^/.]+$/, '');
+                downloadTextFile(`${baseName}_unicode.txt`, text);
                 setProgress(progressFill, progressLabel, 100, 100, 'Done! Downloading…');
 
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const baseName = currentFile.name.replace(/\.[^/.]+$/, '');
-                a.download = `${baseName}_unicode.txt`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-
-                const text = await new Response(blob.slice()).text();
                 resultText.value = text;
                 resultSection.classList.remove('hidden');
                 metaPanel.innerHTML = '';
 
-                // Plain-language summary line, ahead of the detailed meta panel.
-                const fontLabel = dominantFont && dominantFont !== 'unknown' ? dominantFont.toUpperCase() : 'a detected font';
-                const strategyLabel = fontStrategy.replace(/_/g, ' ');
-                let summary = `Detected ${fontLabel} text layer — converted directly (${strategyLabel}), no OCR needed.`;
-                if (tablesDetected > 0) {
-                    const borderlessNote = tablesBorderless > 0 ? ` (${tablesBorderless} without visible borders)` : '';
-                    summary += ` Found and preserved ${tablesDetected} table${tablesDetected === 1 ? '' : 's'}${borderlessNote}.`;
-                }
-                resultSummary.textContent = summary;
+                resultSummary.textContent = buildSummary(headers);
                 resultSummary.classList.remove('hidden');
 
-                addMetaItem(metaPanel, 'Pages', pages);
-                addMetaItem(metaPanel, 'Font detected', dominantFont.toUpperCase());
-                addMetaItem(metaPanel, 'Strategy', strategyLabel);
-                addMetaItem(metaPanel, 'Method', method.replace(/_/g, ' '));
-                addMetaItem(metaPanel, 'Confidence', `${confidence}%`, parsePercent(confidence));
-                addMetaItem(metaPanel, 'Quality score', qualityScore, parsePercent(qualityScore));
-                addMetaItem(metaPanel, 'AI correction', aiApplied ? `✓ Applied (${aiIterations} pass)` : (aiSkipped ? `Skipped (${aiSkipped.replace(/_/g, ' ')})` : 'Skipped (mechanical conversion used)'));
-                addMetaItem(metaPanel, 'Tables detected', tablesDetected > 0 ? `${tablesDetected}${tablesBorderless > 0 ? ` (${tablesBorderless} borderless)` : ''}` : 'None');
+                addMetaItem(metaPanel, 'Pages', headers.pages);
+                addMetaItem(metaPanel, 'Font detected', headers.dominantFont.toUpperCase());
+                addMetaItem(metaPanel, 'Strategy', headers.fontStrategy.replace(/_/g, ' '));
+                addMetaItem(metaPanel, 'Method', headers.method.replace(/_/g, ' '));
+                addMetaItem(metaPanel, 'Confidence', `${headers.confidence}%`, parsePercent(headers.confidence));
+                addMetaItem(metaPanel, 'Quality score', headers.qualityScore, parsePercent(headers.qualityScore));
+                addMetaItem(metaPanel, 'AI correction', headers.aiApplied ? `✓ Applied (${headers.aiIterations} pass)` : (headers.aiSkipped ? `Skipped (${headers.aiSkipped.replace(/_/g, ' ')})` : 'Skipped (mechanical conversion used)'));
+                addMetaItem(metaPanel, 'Tables detected', headers.tablesDetected > 0 ? `${headers.tablesDetected}${headers.tablesBorderless > 0 ? ` (${headers.tablesBorderless} borderless)` : ''}` : 'None');
                 addMetaItem(metaPanel, 'Output', 'Downloaded as .txt');
 
-                history.add(currentFile.name, text);
-
+                history.add(file.name, text);
                 resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
             } catch (err) {
                 showError(err.message || 'Conversion failed.');
             } finally {
-                aiConvertBtn.disabled = !currentFile;
+                aiConvertBtn.disabled = currentFiles.length === 0;
                 aiIcon.classList.remove('hidden');
                 aiSpinner.classList.add('hidden');
                 aiText.textContent = 'Convert to Unicode (.txt)';
                 hideProgress();
             }
+        }
+
+        // ---- Batch conversion (2+ files): per-file status list + zip download ----
+        async function convertBatch(files) {
+            hideError();
+            resultSection.classList.add('hidden');
+            aiConvertBtn.disabled = true;
+            aiIcon.classList.add('hidden');
+            aiSpinner.classList.remove('hidden');
+            downloadAllBtn.classList.add('hidden');
+            showProgress();
+
+            batchList.innerHTML = '';
+            batchList.classList.remove('hidden');
+            const rows = files.map((file) => {
+                const row = document.createElement('div');
+                row.className = 'batch-row';
+                row.innerHTML = `<span class="batch-name">${file.name}</span><span class="batch-status">Waiting…</span>`;
+                batchList.appendChild(row);
+                return row;
+            });
+
+            const results = []; // { file, text, error }
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const statusEl = rows[i].querySelector('.batch-status');
+                aiText.textContent = `Converting ${i + 1}/${files.length}…`;
+                setProgress(progressFill, progressLabel, i, files.length, `Converting ${file.name} (${i + 1}/${files.length})…`);
+                statusEl.textContent = 'Converting…';
+                rows[i].classList.add('batch-active');
+
+                try {
+                    const { text, headers } = await convertOne(file);
+                    results.push({ file, text, headers });
+                    statusEl.innerHTML = '<span class="batch-ok">✓ Done</span>';
+                    rows[i].classList.remove('batch-active');
+                    rows[i].classList.add('batch-done');
+                    rows[i].addEventListener('click', () => {
+                        resultText.value = text;
+                        resultSummary.textContent = buildSummary(headers);
+                        resultSummary.classList.remove('hidden');
+                        resultSection.classList.remove('hidden');
+                        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                    rows[i].title = 'Click to view this file\'s converted text';
+                    rows[i].style.cursor = 'pointer';
+                    history.add(file.name, text);
+                } catch (err) {
+                    results.push({ file, error: err.message || 'Conversion failed' });
+                    statusEl.innerHTML = `<span class="batch-err">✗ ${err.message || 'Failed'}</span>`;
+                    rows[i].classList.remove('batch-active');
+                    rows[i].classList.add('batch-error');
+                }
+            }
+
+            setProgress(progressFill, progressLabel, files.length, files.length, 'All files processed');
+
+            const succeeded = results.filter((r) => r.text);
+            if (succeeded.length && window.JSZip) {
+                downloadAllBtn.classList.remove('hidden');
+                downloadAllBtn.onclick = async () => {
+                    const zip = new JSZip();
+                    for (const r of succeeded) {
+                        const baseName = r.file.name.replace(/\.[^/.]+$/, '');
+                        zip.file(`${baseName}_unicode.txt`, r.text);
+                    }
+                    const blob = await zip.generateAsync({ type: 'blob' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `converted_texts_${Date.now()}.zip`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                };
+            }
+
+            aiConvertBtn.disabled = currentFiles.length === 0;
+            aiIcon.classList.remove('hidden');
+            aiSpinner.classList.add('hidden');
+            aiText.textContent = currentFiles.length > 1 ? `Convert ${currentFiles.length} files (.txt)` : 'Convert to Unicode (.txt)';
+            hideProgress();
+        }
+
+        aiConvertBtn.addEventListener('click', async () => {
+            const files = currentFiles.filter((f) => getExt(f) === '.pdf');
+            if (!files.length) return;
+            if (files.length === 1) {
+                await convertSingle(files[0]);
+            } else {
+                await convertBatch(files);
+            }
         });
 
         wireCopyDownload({
             copyBtn, downloadBtn, textareaEl: resultText,
-            getFileBaseName: () => currentFile ? currentFile.name.replace(/\.[^/.]+$/, '') : 'converted',
+            getFileBaseName: () => currentFiles.length === 1 ? currentFiles[0].name.replace(/\.[^/.]+$/, '') : 'converted',
             suffix: '_unicode.txt',
         });
     })();
