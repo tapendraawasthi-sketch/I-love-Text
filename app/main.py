@@ -50,6 +50,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Lightweight abuse protection ---------------------------------------
+# This runs as a single worker on a resource-constrained host with no
+# request queue, so a handful of concurrent heavy uploads can starve
+# everyone else. This is a simple in-memory per-IP sliding window, not a
+# distributed limiter -- fine for a single-process deployment, but it
+# resets on restart and won't coordinate across multiple workers/replicas
+# if this is ever scaled out.
+import time
+from collections import defaultdict, deque
+
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_REQUESTS = 20
+_RATE_LIMITED_PATH_PREFIXES = ("/api/extract", "/api/convert-to-image-pdf")
+_request_log: dict[str, deque] = defaultdict(deque)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    path = request.url.path
+    if any(path.startswith(p) for p in _RATE_LIMITED_PATH_PREFIXES):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        bucket = _request_log[client_ip]
+        while bucket and now - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= _RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "success": False,
+                    "detail": "Too many requests. Please wait a bit and try again.",
+                },
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW_SECONDS)},
+            )
+        bucket.append(now)
+    return await call_next(request)
+
+
+def _memory_error_response(context: str, detail: str) -> JSONResponse:
+    logger.error("%s ran out of memory", context, exc_info=True)
+    return JSONResponse(status_code=507, content={"success": False, "detail": detail})
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -90,10 +132,14 @@ async def health_check():
     from app.legacy_fonts.converter import check_conversion_status
     conversion_status = check_conversion_status()
     
+    # Actually exercise the built-in converter rather than assuming it works
+    from app.legacy_fonts.converter import convert_legacy_text
+    builtin_ok = "नेपाल" in convert_legacy_text("g]kfn", "Preeti")
+
     return {
         "status": "ok",
         "languages": langs,
-        "legacy_font_support": True,  # Always true now with built-in
+        "legacy_font_support": builtin_ok,
         "conversion": conversion_status,
     }
 
@@ -141,16 +187,10 @@ async def extract_api(
             # Images always use OCR
             result = await run_in_threadpool(extract_image, file_bytes, lang)
     except MemoryError:
-        logger.error("OCR ran out of memory for %s", filename, exc_info=True)
-        return JSONResponse(
-            status_code=507,
-            content={
-                "success": False,
-                "detail": (
-                    "Server ran out of memory while processing this file. "
-                    "Try a smaller PDF, fewer pages, or lower-resolution scan."
-                ),
-            },
+        return _memory_error_response(
+            f"OCR for {filename}",
+            "Server ran out of memory while processing this file. "
+            "Try a smaller PDF, fewer pages, or lower-resolution scan.",
         )
 
     text = result.pop("text", "")
@@ -270,13 +310,9 @@ async def convert_to_image_pdf_api(
             quality,
         )
     except MemoryError:
-        logger.error("Conversion ran out of memory for %s", filename, exc_info=True)
-        return JSONResponse(
-            status_code=507,
-            content={
-                "success": False,
-                "detail": "Server ran out of memory. Try a smaller file or lower DPI.",
-            },
+        return _memory_error_response(
+            f"Conversion for {filename}",
+            "Server ran out of memory. Try a smaller file or lower DPI.",
         )
     
     # Generate output filename
@@ -307,7 +343,7 @@ async def classify_intent_api(text: str = Form(...)):
         
     intent = classify(text)
     
-    logger.info(f"Classified intent: '{intent}' for text: '{text[:50]}...'")
+    logger.info(f"Classified intent: '{intent}' for {len(text)} chars of input text")
     
     return {
         "success": True,
@@ -375,9 +411,9 @@ async def extract_pdf_smart_txt_api(
         from app.nlp.ai_corrector import process_pdf_smart
         result = await run_in_threadpool(process_pdf_smart, file_bytes)
     except MemoryError:
-        return JSONResponse(
-            status_code=507,
-            content={"success": False, "detail": "Out of memory. Try a smaller PDF."},
+        return _memory_error_response(
+            f"Smart-TXT pipeline for {filename}",
+            "Out of memory. Try a smaller PDF.",
         )
     except Exception as e:
         logger.error(f"Smart-TXT pipeline error: {e}", exc_info=True)

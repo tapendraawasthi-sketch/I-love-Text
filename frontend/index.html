@@ -41,7 +41,7 @@
                     </div>
                 </div>
 
-                <div id="upload-zone-ocr" class="upload-zone" tabindex="0">
+                <div id="upload-zone-ocr" class="upload-zone" tabindex="0" role="button" aria-label="Choose a file or drag it here to extract text. PDF, DOCX, or images, up to 100 MB.">
                     <input type="file" id="file-input-ocr" accept=".pdf,.docx,.png,.jpg,.jpeg,.tiff,.bmp,.webp" hidden>
                     <div class="upload-content">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -55,8 +55,8 @@
                 </div>
 
                 <div id="progress-section-ocr" class="progress-section hidden">
-                    <div class="progress-track"><div id="progress-fill-ocr" class="progress-fill"></div></div>
-                    <p id="progress-label-ocr" class="progress-label">Starting…</p>
+                    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="progress-label-ocr"><div id="progress-fill-ocr" class="progress-fill"></div></div>
+                    <p id="progress-label-ocr" class="progress-label" aria-live="polite">Starting…</p>
                 </div>
 
                 <div class="controls">
@@ -82,13 +82,13 @@
 
                 <div id="result-section-ocr" class="result-section hidden">
                     <div class="result-header">
-                        <h2>Extracted Text</h2>
+                        <h2 id="result-heading-ocr">Extracted Text</h2>
                         <div class="result-actions">
                             <button id="copy-btn-ocr" class="secondary-btn">Copy</button>
                             <button id="download-btn-ocr" class="secondary-btn">Download .txt</button>
                         </div>
                     </div>
-                    <textarea id="result-text-ocr" lang="ne" placeholder="Extracted text will appear here — you can edit it directly before copying or downloading."></textarea>
+                    <textarea id="result-text-ocr" lang="ne" aria-labelledby="result-heading-ocr" placeholder="Extracted text will appear here — you can edit it directly before copying or downloading."></textarea>
                     <div class="meta-panel" id="meta-panel-ocr"></div>
                 </div>
 
@@ -110,7 +110,7 @@
                     </div>
                 </div>
 
-                <div id="upload-zone-np" class="upload-zone nepali-upload-zone" tabindex="0">
+                <div id="upload-zone-np" class="upload-zone nepali-upload-zone" tabindex="0" role="button" aria-label="Choose a file or drag it here to convert legacy Nepali font to Unicode.">
                     <input type="file" id="file-input-np" accept=".pdf" multiple hidden>
                     <div class="upload-content">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -126,8 +126,8 @@
                 <div id="batch-list-np" class="batch-list hidden"></div>
 
                 <div id="progress-section-np" class="progress-section hidden">
-                    <div class="progress-track"><div id="progress-fill-np" class="progress-fill nepali-fill"></div></div>
-                    <p id="progress-label-np" class="progress-label">Starting…</p>
+                    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="progress-label-np"><div id="progress-fill-np" class="progress-fill nepali-fill"></div></div>
+                    <p id="progress-label-np" class="progress-label" aria-live="polite">Starting…</p>
                 </div>
 
                 <div class="controls">
@@ -141,14 +141,14 @@
 
                 <div id="result-section-np" class="result-section hidden">
                     <div class="result-header">
-                        <h2>Converted Text</h2>
+                        <h2 id="result-heading-np">Converted Text</h2>
                         <div class="result-actions">
                             <button id="copy-btn-np" class="secondary-btn">Copy</button>
                             <button id="download-btn-np" class="secondary-btn">Download .txt</button>
                         </div>
                     </div>
                     <p id="result-summary-np" class="result-summary hidden"></p>
-                    <textarea id="result-text-np" lang="ne" placeholder="Converted Unicode text will appear here — you can edit it directly before copying or downloading."></textarea>
+                    <textarea id="result-text-np" lang="ne" aria-labelledby="result-heading-np" placeholder="Converted Unicode text will appear here — you can edit it directly before copying or downloading."></textarea>
                     <div class="meta-panel" id="meta-panel-np"></div>
                 </div>
 
@@ -162,7 +162,7 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>

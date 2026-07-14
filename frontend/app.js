@@ -68,6 +68,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         zoneEl.addEventListener('click', () => inputEl.click());
+        zoneEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                inputEl.click();
+            }
+        });
         zoneEl.addEventListener('dragover', (e) => { e.preventDefault(); zoneEl.classList.add('dragover'); });
         zoneEl.addEventListener('dragleave', () => zoneEl.classList.remove('dragover'));
         zoneEl.addEventListener('drop', (e) => {
@@ -128,6 +134,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         zoneEl.addEventListener('click', () => inputEl.click());
+        zoneEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                inputEl.click();
+            }
+        });
         zoneEl.addEventListener('dragover', (e) => { e.preventDefault(); zoneEl.classList.add('dragover'); });
         zoneEl.addEventListener('dragleave', () => zoneEl.classList.remove('dragover'));
         zoneEl.addEventListener('drop', (e) => {
@@ -144,6 +156,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = total ? Math.round((done / total) * 100) : 0;
         fillEl.style.width = `${pct}%`;
         labelEl.textContent = label || `${pct}%`;
+        const track = fillEl.parentElement;
+        if (track && track.getAttribute('role') === 'progressbar') {
+            track.setAttribute('aria-valuenow', String(pct));
+        }
     }
 
     function addMetaItem(panelEl, label, value, confidencePct) {

@@ -685,19 +685,50 @@
     // Process pages in parallel
     const pageQueue = Array.from({ length: totalPages }, (_, i) => i + 1);
     
+    const PAGE_TIMEOUT_MS = 120000; // a single page that hasn't finished by
+    // now is almost certainly stuck (hung worker, pathological image),
+    // not just slow -- better to move on than block the whole document.
+    // Note: this abandons the pending promise but can't force-terminate a
+    // wedged Tesseract worker mid-recognition, so a truly stuck worker
+    // stays unavailable for the rest of this batch (reduced parallelism)
+    // even though the document as a whole keeps progressing instead of
+    // hanging forever.
+
     async function processPage(pageNum) {
-      const canvas = await renderPdfPage(pdf, pageNum, scale);
-      const result = await ocrPageAdaptive(canvas, workerPool, profile);
-      results[pageNum - 1] = result;
+      try {
+        const result = await Promise.race([
+          (async () => {
+            const canvas = await renderPdfPage(pdf, pageNum, scale);
+            return ocrPageAdaptive(canvas, workerPool, profile);
+          })(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('page timed out')), PAGE_TIMEOUT_MS)
+          ),
+        ]);
+        results[pageNum - 1] = result;
+        if (result.fastPath) fastPathCount++;
+      } catch (err) {
+        console.error(`Page ${pageNum} OCR failed:`, err);
+        results[pageNum - 1] = {
+          text: `[Page ${pageNum}: OCR failed — ${err && err.message ? err.message : 'unknown error'}]`,
+          confidence: 0,
+          nepaliChars: 0,
+          fastPath: false,
+        };
+      }
       completed++;
-      if (result.fastPath) fastPathCount++;
       if (onProgress) {
+        const result = results[pageNum - 1];
         const path = result.fastPath ? 'fast' : 'multi-pass';
         onProgress(completed, totalPages, `Page ${completed}/${totalPages} · ${path} · ${result.confidence}%`);
       }
     }
 
-    // Run workers in parallel
+    // Run workers in parallel. Each lane's loop is itself defensive (a
+    // stray exception here shouldn't be possible now that processPage
+    // never throws, but Promise.allSettled is a second safety net so a
+    // truly unexpected failure in one lane still can't wipe out pages
+    // already completed by the others).
     const workers = [];
     for (let i = 0; i < profile.maxWorkers; i++) {
       workers.push((async () => {
@@ -707,7 +738,10 @@
         }
       })());
     }
-    await Promise.all(workers);
+    const laneResults = await Promise.allSettled(workers);
+    laneResults.forEach((lane, i) => {
+      if (lane.status === 'rejected') console.error(`OCR worker lane ${i} failed:`, lane.reason);
+    });
     await workerPool.terminate();
 
     const texts = results.map(r => r.text);
