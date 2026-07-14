@@ -341,7 +341,7 @@ async def detect_fonts_api(
         logger.error(f"Font detection error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "detail": "Font detection failed", "error": str(e)},
+            content={"success": False, "detail": "Font detection failed"},
         )
 
     return {"success": True, "filename": filename, **result}
@@ -350,8 +350,6 @@ async def detect_fonts_api(
 @app.post("/api/extract/smart-txt")
 async def extract_pdf_smart_txt_api(
     file: UploadFile = File(...),
-    model: str = Form("llama3"),
-    use_ai: bool = Form(False),
 ):
     """
     High-accuracy font-aware PDF → TXT (no OCR).
@@ -359,9 +357,6 @@ async def extract_pdf_smart_txt_api(
     Reads the PDF text layer directly and converts legacy Nepali fonts
     (Preeti, Kantipur, Sagarmatha, etc.) to proper Unicode. This is more
     accurate than OCR for PDFs that already contain embedded text.
-
-    Optional AI refinement is off by default and only runs when use_ai=true
-    and ENABLE_LLM_OCR_ENHANCEMENT is enabled in the environment.
     """
     filename = file.filename or "unknown.pdf"
     ext = os.path.splitext(filename)[1].lower()
@@ -374,15 +369,11 @@ async def extract_pdf_smart_txt_api(
     if size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
 
-    logger.info(
-        f"Smart-TXT pipeline: {filename} ({size_mb:.2f}MB), model={model}, use_ai={use_ai}"
-    )
+    logger.info(f"Smart-TXT pipeline: {filename} ({size_mb:.2f}MB)")
 
     try:
         from app.nlp.ai_corrector import process_pdf_smart
-        result = await run_in_threadpool(
-            process_pdf_smart, file_bytes, model, use_ai=use_ai
-        )
+        result = await run_in_threadpool(process_pdf_smart, file_bytes)
     except MemoryError:
         return JSONResponse(
             status_code=507,
@@ -392,7 +383,7 @@ async def extract_pdf_smart_txt_api(
         logger.error(f"Smart-TXT pipeline error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "detail": "Pipeline failed", "error": str(e)},
+            content={"success": False, "detail": "Pipeline failed"},
         )
 
     base_name = os.path.splitext(filename)[0]
@@ -406,16 +397,11 @@ async def extract_pdf_smart_txt_api(
         "X-Pages": str(result["pages"]),
         "X-Font-Strategy": result["font_analysis"].get("strategy", "unknown"),
         "X-Dominant-Font": result["font_analysis"].get("dominant_family", "unknown"),
-        "X-AI-Applied": str(result["ai_applied"]).lower(),
-        "X-AI-Iterations": str(result.get("iterations", 0)),
-        "X-Confidence": str(result.get("confidence", 0)),
         "X-Quality-Score": str(result.get("quality", {}).get("score", 0)),
         "X-Method": result.get("method", "direct_font_conversion"),
         "X-Tables-Detected": str(result.get("tables_detected", 0)),
         "X-Tables-Borderless": str(result.get("tables_by_method", {}).get("column_clustering", 0)),
     }
-    if result.get("ai_skipped_reason"):
-        headers["X-AI-Skipped-Reason"] = result["ai_skipped_reason"]
 
     return Response(
         content=result["text"].encode("utf-8"),
