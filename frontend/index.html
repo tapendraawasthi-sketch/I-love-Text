@@ -16,7 +16,7 @@
     <div class="container">
         <header>
             <h1>TextExtract</h1>
-            <p>Two dedicated tools for two different kinds of documents — pick the one that matches your file.</p>
+            <p><strong>Maximum Accuracy .txt</strong> — Forensic as-is by default (no word guessing). Use Font→Unicode for digital Preeti/Kantipur PDFs; use Scan OCR only for image-based pages.</p>
             <p id="device-badge" class="device-badge">Detecting your device…</p>
         </header>
 
@@ -131,6 +131,18 @@
                 </div>
 
                 <div class="controls">
+                    <div class="input-group">
+                        <label for="fidelity-select-np">Fidelity</label>
+                        <select id="fidelity-select-np">
+                            <option value="forensic" selected>Forensic (as-is)</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="assisted">Assisted repairs</option>
+                        </select>
+                    </div>
+                    <button id="forensic-txt-btn" class="secondary-btn" disabled>
+                        <span class="btn-text">Download as-is .txt</span>
+                        <span class="spinner hidden"></span>
+                    </button>
                     <button id="ai-convert-btn" disabled>
                         <span class="ai-btn-icon">✦</span>
                         <span class="ai-btn-text">Convert to Unicode (.txt)</span>
@@ -138,6 +150,7 @@
                     </button>
                     <button id="download-all-btn-np" class="secondary-btn hidden">Download all (.zip)</button>
                 </div>
+                <p class="feature-footnote"><strong>Download as-is .txt</strong> uses the server forensic pipeline (no unsupervised word swaps). <strong>Convert to Unicode</strong> is the direct font-layer converter for Preeti/Kantipur text layers.</p>
 
                 <div id="result-section-np" class="result-section hidden">
                     <div class="result-header">

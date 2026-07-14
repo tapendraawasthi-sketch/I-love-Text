@@ -1,16 +1,31 @@
 """
 Intelligence module — Document Intelligence System.
 
-Replaces the linear OCR pipeline with a multi-phase
-intelligence-driven architecture:
-
-1. Document Intelligence (what is this document?)
-2. Page Intelligence (what's on each page?)
-3. Region Intelligence (what are the regions?)
-4. Extraction (per-region optimal strategy)
-5. Character Candidates (multiple hypotheses)
-6. Knowledge Base Correction (domain-aware)
-7. Cross-Page Validation
-8. Semantic Validation
-9. Error Memory (learning loop)
+Phase 1: analyze_document_json() — structural page analysis (no text).
+Phase 2: segment_document_json() — semantic block segmentation (no OCR).
+Phase 3+: region-based extraction uses legacy adapters.
 """
+
+from app.intelligence.document_intelligence import (
+    analyze_document,
+    analyze_document_json,
+    segment_document_json,
+    DocumentFamily,
+    DocumentIntelligenceResult,
+    PageIntelligence,
+    PageRegion,
+    PageType,
+    RegionType,
+)
+
+__all__ = [
+    "analyze_document",
+    "analyze_document_json",
+    "segment_document_json",
+    "DocumentFamily",
+    "DocumentIntelligenceResult",
+    "PageIntelligence",
+    "PageRegion",
+    "PageType",
+    "RegionType",
+]

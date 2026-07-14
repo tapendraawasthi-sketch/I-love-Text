@@ -4,6 +4,23 @@ TextExtract is a high-accuracy text-extraction web app backend.
 It extracts human-readable text from PDFs, DOCX, and images in both English and Nepali. 
 This project uses strictly classical OCR (Tesseract) and rule-based legacy-font (Preeti/Kantipur/etc.) to Unicode conversion without any AI/LLM/cloud recognition components.
 
+## Accuracy / Fidelity modes
+
+`.txt` extraction defaults to **forensic** fidelity (as-is):
+
+| Mode | Behavior |
+|------|----------|
+| `forensic` (default) | Proven font conversion only; **no** dictionary / lexicon / cross-page word mutations |
+| `balanced` | Light NFC + structural cleanup |
+| `assisted` | Optional knowledge-base repairs (opt-in) |
+| `ocr_max` | Scan OCR path with PUA cleanup only |
+
+`POST /api/extract` and `POST /api/extract-txt` accept form fields:
+- `fidelity` — see above
+- `mode` — `auto` | `direct` | `ocr`
+
+See `docs/TXT_ACCURACY_DEEP_AUDIT_AND_IMPROVEMENT_PLAN.md` for the full accuracy architecture.
+
 ## System Dependencies
 
 This application requires the following system packages to be installed on the host machine:

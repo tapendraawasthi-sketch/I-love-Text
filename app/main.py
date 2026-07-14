@@ -127,20 +127,128 @@ async def value_error_handler(request: Request, exc: ValueError):
 @app.get("/api/health")
 async def health_check():
     langs = available_languages()
-    
-    # Check legacy font conversion
+
     from app.legacy_fonts.converter import check_conversion_status
     conversion_status = check_conversion_status()
-    
+
     # Actually exercise the built-in converter rather than assuming it works
     from app.legacy_fonts.converter import convert_legacy_text
     builtin_ok = "नेपाल" in convert_legacy_text("g]kfn", "Preeti")
 
+    nep_ok = "nep" in langs
+    npttf_ok = bool(conversion_status.get("npttf2utf_working"))
+    degraded_reasons: list[str] = []
+    if not nep_ok:
+        degraded_reasons.append("nep_tessdata_missing")
+    if not npttf_ok:
+        degraded_reasons.append("npttf2utf_unavailable")
+    if not builtin_ok:
+        degraded_reasons.append("builtin_preeti_converter_failed")
+
     return {
-        "status": "ok",
+        "status": "degraded" if degraded_reasons else "ok",
+        "degraded": bool(degraded_reasons),
+        "degraded_reasons": degraded_reasons,
         "languages": langs,
         "legacy_font_support": builtin_ok,
         "conversion": conversion_status,
+        "default_fidelity": "forensic",
+    }
+
+
+@app.post("/api/segment")
+async def segment_document_api(
+    file: UploadFile = File(...),
+):
+    """
+    Segment every page into semantic blocks before extraction.
+
+    Returns typed blocks (heading, paragraph, table, figure, etc.) with
+    bbox, confidence, reading order, and content flags. No OCR is performed.
+    """
+    filename = file.filename or "unknown"
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"File type {ext} not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    logger.info("Segment: %s (%.2f MB)", filename, size_mb)
+
+    from app.intelligence.document_intelligence import segment_document_json
+
+    file_type = ext.lstrip(".")
+    mime = None
+    if file.content_type and file.content_type != "application/octet-stream":
+        mime = file.content_type
+
+    report = await run_in_threadpool(
+        segment_document_json,
+        file_bytes,
+        file_type=file_type,
+        mime_type=mime,
+        filename=filename,
+    )
+
+    return {
+        "success": True,
+        "filename": filename,
+        **report,
+    }
+
+
+@app.post("/api/analyze")
+async def analyze_document_api(
+    file: UploadFile = File(...),
+):
+    """
+    Analyze a document structure without extracting text.
+
+    Returns JSON describing document-level and per-page properties:
+    fonts, scripts, regions, layout, scan profile, tables, images, etc.
+    """
+    filename = file.filename or "unknown"
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"File type {ext} not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
+
+    logger.info("Analyze: %s (%.2f MB)", filename, size_mb)
+
+    from app.intelligence.document_intelligence import analyze_document_json
+
+    file_type = ext.lstrip(".")
+    mime = None
+    if file.content_type and file.content_type != "application/octet-stream":
+        mime = file.content_type
+
+    report = await run_in_threadpool(
+        analyze_document_json,
+        file_bytes,
+        file_type=file_type,
+        mime_type=mime,
+        filename=filename,
+    )
+
+    return {
+        "success": True,
+        "filename": filename,
+        **report,
     }
 
 
@@ -149,20 +257,34 @@ async def extract_api(
     file: UploadFile = File(...),
     lang: str = Form("auto"),
     mode: str = Form("auto"),
+    fidelity: str = Form("forensic"),
 ):
     """
     Extract text from document.
-    
+
     Modes:
         - "direct": Text layer extraction only (fastest, 95-100% accuracy for digital PDFs)
         - "ocr": Image OCR only (for scanned documents)
         - "auto": Try direct first, OCR fallback for pages without text
+
+    Fidelity:
+        - "forensic": as-is (default) — no dictionary/cross-page mutations
+        - "balanced": light cleanup only
+        - "assisted": optional knowledge-base repairs
+        - "ocr_max": scan OCR path
     """
+    from app.extract.fidelity import normalize_fidelity
+
     if lang not in ("auto", "eng", "nep", "eng+nep"):
         raise ValueError(f"Invalid language: {lang}")
-    
+
     if mode not in ("auto", "direct", "ocr"):
         raise ValueError(f"Invalid mode: {mode}. Use 'auto', 'direct', or 'ocr'.")
+
+    try:
+        fidelity_mode = normalize_fidelity(fidelity)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
     filename = file.filename or "unknown"
     ext = os.path.splitext(filename)[1].lower()
@@ -176,11 +298,18 @@ async def extract_api(
     if size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
 
-    logger.info(f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}, mode={mode}")
+    logger.info(
+        f"Processing: {filename} ({size_mb:.2f}MB), lang={lang}, mode={mode}, fidelity={fidelity_mode}"
+    )
+
+    from app.extract.fidelity import reset_fidelity, set_fidelity
+    fidelity_token = set_fidelity(fidelity_mode)
 
     try:
         if ext == ".pdf":
-            result = await run_in_threadpool(extract_pdf, file_bytes, lang, mode)
+            result = await run_in_threadpool(
+                extract_pdf, file_bytes, lang, mode, fidelity_mode
+            )
         elif ext == ".docx":
             result = await run_in_threadpool(extract_docx, file_bytes, lang, mode)
         else:
@@ -192,6 +321,8 @@ async def extract_api(
             "Server ran out of memory while processing this file. "
             "Try a smaller PDF, fewer pages, or lower-resolution scan.",
         )
+    finally:
+        reset_fidelity(fidelity_token)
 
     text = result.pop("text", "")
 
@@ -201,6 +332,7 @@ async def extract_api(
         "filename": filename,
         "lang": lang,
         "mode": mode,
+        "fidelity": fidelity_mode,
         "meta": result,
     }
 
@@ -209,29 +341,33 @@ async def extract_api(
 async def extract_txt_api(
     file: UploadFile = File(...),
     lang: str = Form("auto"),
+    mode: str = Form("auto"),
+    fidelity: str = Form("forensic"),
     page_separators: bool = Form(True),
     headers_footers: bool = Form(True),
     quality_report: bool = Form(False),
+    bom: bool = Form(False),
 ):
     """
     Extract text from a document and return a clean .txt file download.
 
-    The response is a UTF-8 plain-text file (Content-Type: text/plain).
-    Nepali text is fully converted to Unicode — no legacy font encoding.
-
-    Form parameters
-    ---------------
-    file            : The PDF file to extract.
-    lang            : "auto" | "eng" | "nep" | "eng+nep"
-    page_separators : Include ═══ PAGE N ═══ separators (default true).
-    headers_footers : Include [HEADER] and [FOOTER] labels (default true).
-    quality_report  : Append extraction quality summary at end (default false).
+    Default fidelity is forensic (as-is): no unsupervised word mutations.
     """
+    from app.extract.fidelity import normalize_fidelity
+
     filename = file.filename or "document"
     ext = os.path.splitext(filename)[1].lower()
 
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(f"File type {ext} not allowed.")
+
+    if mode not in ("auto", "direct", "ocr"):
+        raise ValueError(f"Invalid mode: {mode}.")
+
+    try:
+        fidelity_mode = normalize_fidelity(fidelity)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
     file_bytes = await file.read()
     size_mb = len(file_bytes) / (1024 * 1024)
@@ -239,20 +375,34 @@ async def extract_txt_api(
     if size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(f"File ({size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit.")
 
-    logger.info("extract-txt: %s (%.2f MB), lang=%s", filename, size_mb, lang)
+    logger.info(
+        "extract-txt: %s (%.2f MB), lang=%s, mode=%s, fidelity=%s",
+        filename, size_mb, lang, mode, fidelity_mode,
+    )
 
-    if ext == ".pdf":
-        result = await run_in_threadpool(extract_pdf, file_bytes, lang, "auto")
-    elif ext == ".docx":
-        result = await run_in_threadpool(extract_docx, file_bytes, lang, "auto")
-    else:
-        result = await run_in_threadpool(extract_image, file_bytes, lang)
+    from app.extract.fidelity import reset_fidelity, set_fidelity
+    fidelity_token = set_fidelity(fidelity_mode)
+
+    try:
+        if ext == ".pdf":
+            result = await run_in_threadpool(
+                extract_pdf, file_bytes, lang, mode, fidelity_mode
+            )
+        elif ext == ".docx":
+            result = await run_in_threadpool(extract_docx, file_bytes, lang, mode)
+        else:
+            result = await run_in_threadpool(extract_image, file_bytes, lang)
+    finally:
+        reset_fidelity(fidelity_token)
+
+    result.setdefault("fidelity", fidelity_mode)
 
     txt_content = format_as_txt(
         result,
         include_page_separators=page_separators,
         include_headers_footers=headers_footers,
         include_quality_report=quality_report,
+        utf8_bom=bom,
     )
 
     # Build download filename, preserving non-ASCII (e.g. Nepali) names
@@ -264,7 +414,13 @@ async def extract_txt_api(
     return Response(
         content=txt_content.encode("utf-8"),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": attachment_disposition(download_name)},
+        headers={
+            "Content-Disposition": attachment_disposition(download_name),
+            "X-Fidelity": fidelity_mode,
+            "X-Extract-Mode": mode,
+            "X-Mean-Confidence": str(result.get("mean_confidence", "")),
+            "X-Method": str(result.get("method", "")),
+        },
     )
 
 

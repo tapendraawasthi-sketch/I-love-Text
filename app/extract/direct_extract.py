@@ -27,6 +27,12 @@ from app.legacy_fonts.converter import (
 from app.legacy_fonts.mappings import get_npttf2utf_map_name
 from app.legacy_fonts.preeti_map import is_likely_preeti
 from app.nlp.font_detector import analyse_document_fonts, guess_font_from_text
+from app.nlp.pdf_font_utils import (
+    analyse_block_fonts,
+    enrich_font_lookup,
+    resolve_font_info,
+    should_convert_span as _font_should_convert,
+)
 from app.extract.unicode_validator import repair_devanagari_unicode, validate_devanagari_text
 from app.logging_config import get_logger
 
@@ -73,8 +79,9 @@ def _fix_common_errors(text: str) -> str:
 
     text = _normalize_unicode(text)
 
-    # Apply Devanagari-specific Unicode repairs (matra reordering, etc.)
-    if _DEVANAGARI_RE.search(text):
+    # Matra redistribution only outside forensic mode
+    from app.extract.fidelity import allow_unicode_matra_repair
+    if _DEVANAGARI_RE.search(text) and allow_unicode_matra_repair():
         text = repair_devanagari_unicode(text)
 
     # Remove PUA characters
@@ -124,62 +131,71 @@ def _validate_conversion(original: str, converted: str, font_name: str) -> dict[
 
 
 def build_font_lookup(font_analysis: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Map raw PDF font names to conversion strategy from font analysis."""
-    lookup: dict[str, dict[str, Any]] = {}
-    for font in font_analysis.get("fonts_found", []):
-        lookup[font["raw_name"]] = font
-    return lookup
+    """Map raw PDF font names (and subset aliases) to conversion strategy."""
+    return enrich_font_lookup(font_analysis)
 
 
-def _should_convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> bool:
-    if not raw_text or not raw_text.strip():
-        return False
-    if _is_decorative_font(font_name):
-        return False
-    if is_plain_ascii_text(raw_text):
-        return False
+def _should_convert_span(
+    raw_text: str,
+    font_name: str,
+    font_info: dict[str, Any] | None,
+    font_lookup: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    resolved = font_info if font_info and font_info.get("family") else resolve_font_info(
+        font_name, font_lookup, raw_text,
+    )
+    return _font_should_convert(
+        raw_text,
+        resolved,
+        is_decorative=_is_decorative_font(font_name),
+        is_plain_ascii=is_plain_ascii_text(raw_text),
+        is_legacy_encoded_fn=is_legacy_encoded,
+        is_legacy_font_fn=is_legacy_font,
+    )
 
-    # PDF font name is ground truth for Preeti/Kantipur spans.
-    if _is_preeti_font(font_name) or is_legacy_font(font_name):
-        return True
-    if font_info and font_info.get("is_legacy"):
-        return True
-    return is_legacy_encoded(raw_text)
 
-
-def _convert_span(raw_text: str, font_name: str, font_info: dict[str, Any] | None) -> str:
+def _convert_span(
+    raw_text: str,
+    font_name: str,
+    font_info: dict[str, Any] | None,
+    font_lookup: dict[str, dict[str, Any]] | None = None,
+) -> str:
     if _is_decorative_font(font_name):
         return ""
-    if not _should_convert_span(raw_text, font_name, font_info):
+    resolved = font_info if font_info and font_info.get("family") else resolve_font_info(
+        font_name, font_lookup, raw_text,
+    )
+    if not _should_convert_span(raw_text, font_name, resolved, font_lookup):
         return raw_text
 
     primary_map = None
-    if font_info and font_info.get("conversion_map"):
-        primary_map = font_info["conversion_map"]
+    if resolved.get("conversion_map"):
+        primary_map = resolved["conversion_map"]
     elif _is_preeti_font(font_name):
         primary_map = "preeti"
     elif is_legacy_font(font_name):
         primary_map = get_npttf2utf_map_name(font_name)
     else:
         guess = guess_font_from_text(raw_text)
-        if guess["family"] not in ("unicode", "unknown"):
+        # Only convert when font family is confidently known
+        if guess["family"] not in ("unicode", "unknown") and guess.get("confidence", 0) >= 55:
             primary_map = guess["family"]
 
-    maps_to_try: list[str] = []
-    for m in (primary_map, "preeti", "kantipur"):
-        if m and m not in maps_to_try:
-            maps_to_try.append(m)
+    if not primary_map:
+        return raw_text
 
-    best = raw_text
-    best_score = score_text_quality(raw_text)["score"]
-    for map_name in maps_to_try:
-        converted = force_convert_legacy(raw_text, map_name)
-        converted_score = score_text_quality(converted)["score"]
-        if converted_score > best_score:
-            best = converted
-            best_score = converted_score
+    # Use the proven map only — do not brute-force Preeti+Kantipur
+    # (wrong map winning on heuristic score causes Nepali corruption).
+    converted = force_convert_legacy(raw_text, primary_map)
+    if converted == raw_text:
+        return raw_text
 
-    return best
+    # Accept only if quality improved meaningfully
+    raw_score = score_text_quality(raw_text)["score"]
+    conv_score = score_text_quality(converted)["score"]
+    if conv_score >= raw_score + 2.0 or _devanagari_ratio(converted) >= 0.25:
+        return converted
+    return raw_text
 
 
 def score_text_quality(text: str) -> dict[str, Any]:
@@ -236,6 +252,130 @@ def score_text_quality(text: str) -> dict[str, Any]:
     }
 
 
+def _bbox_overlaps(
+    a: tuple[float, ...],
+    b: tuple[float, ...],
+    min_ratio: float = 0.15,
+) -> bool:
+    x0 = max(a[0], b[0])
+    y0 = max(a[1], b[1])
+    x1 = min(a[2], b[2])
+    y1 = min(a[3], b[3])
+    if x1 <= x0 or y1 <= y0:
+        return False
+    inter = (x1 - x0) * (y1 - y0)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    return inter / max(area_a, 1.0) >= min_ratio
+
+
+def extract_block_direct(
+    page: fitz.Page,
+    bbox: tuple[float, float, float, float],
+    font_lookup: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Extract text from a single block bbox with per-span font conversion.
+
+    Each span is classified independently — mixed legacy + Unicode fonts on
+    the same page/block are supported. Unicode spans are never converted.
+    """
+    font_profile = analyse_block_fonts(page, bbox, font_lookup)
+
+    clip = fitz.Rect(bbox)
+    page_dict = page.get_text("dict", clip=clip, flags=fitz.TEXT_PRESERVE_WHITESPACE)
+
+    legacy_fonts: set[str] = set()
+    converted_spans = 0
+    total_spans = 0
+    span_confidences: list[float] = []
+    block_lines: list[str] = []
+
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        if not _bbox_overlaps(tuple(block.get("bbox", bbox)), bbox):
+            continue
+
+        lines_out: list[str] = []
+        for line in block.get("lines", []):
+            parts: list[tuple[str, float]] = []
+            for span in line.get("spans", []):
+                raw = span.get("text", "")
+                if not raw.strip():
+                    continue
+                font_name = span.get("font", "")
+                total_spans += 1
+                font_info = resolve_font_info(font_name, font_lookup, raw)
+                span_confidences.append(float(font_info.get("confidence", 70)))
+
+                if _should_convert_span(raw, font_name, font_info, font_lookup):
+                    legacy_fonts.add(font_name)
+                    converted_spans += 1
+                    text = _convert_span(raw, font_name, font_info, font_lookup)
+                else:
+                    text = raw
+                parts.append((text, span.get("bbox", (0, 0, 0, 0))[0]))
+
+            if not parts:
+                continue
+            parts.sort(key=lambda x: x[1])
+            line_str = ""
+            for i, (text, x0) in enumerate(parts):
+                if i == 0:
+                    line_str = text
+                else:
+                    gap = x0 - parts[i - 1][1]
+                    line_str += ("\t" if gap > 50 else " " if gap > 5 else "") + text
+            lines_out.append(line_str)
+
+        if lines_out:
+            block_lines.append("\n".join(lines_out))
+
+    text = _fix_common_errors("\n\n".join(block_lines))
+    if not text.strip():
+        return {
+            "text": "",
+            "method": "no_text",
+            "confidence": 0.0,
+            "char_count": 0,
+            "legacy_fonts": [],
+            "fonts": font_profile.get("fonts", []),
+            "font_confidence": 0.0,
+            "is_mixed_fonts": False,
+            "encoding": "unknown",
+        }
+
+    quality = score_text_quality(text)
+    method = "direct_mixed" if font_profile.get("is_mixed_fonts") else (
+        "direct_legacy" if legacy_fonts else "direct_unicode"
+    )
+
+    text_confidence = min(100.0, quality["score"])
+    font_confidence = font_profile.get("font_confidence", 0.0)
+    span_conf = (
+        sum(span_confidences) / len(span_confidences) if span_confidences else font_confidence
+    )
+    confidence = round(text_confidence * 0.65 + span_conf * 0.35, 1)
+
+    return {
+        "text": text,
+        "method": method,
+        "confidence": confidence,
+        "char_count": len(text.strip()),
+        "legacy_fonts": sorted(legacy_fonts),
+        "fonts": font_profile.get("fonts", []),
+        "dominant_font": font_profile.get("dominant_font"),
+        "font_confidence": font_confidence,
+        "is_mixed_fonts": font_profile.get("is_mixed_fonts", False),
+        "encoding": font_profile.get("encoding", "unknown"),
+        "has_legacy_font": font_profile.get("has_legacy_font", False),
+        "has_unicode_font": font_profile.get("has_unicode_font", False),
+        "converted_spans": converted_spans,
+        "total_spans": total_spans,
+        "quality": quality,
+    }
+
+
 def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """
     Extract text directly from PDF page with font-aware conversion.
@@ -268,7 +408,7 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
     
     detected_fonts: set[str] = set()
     legacy_fonts: set[str] = set()
-    blocks_output: list[str] = []
+    blocks_output: list[tuple[float, str]] = []  # (y0, text) — keeps order with tables
     total_chars = 0
     converted_chars = 0
     
@@ -299,10 +439,10 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
                 detected_fonts.add(font_name)
                 total_chars += len(raw_text)
 
-                font_info = (font_lookup or {}).get(font_name)
-                if _should_convert_span(raw_text, font_name, font_info):
+                font_info = resolve_font_info(font_name, font_lookup, raw_text)
+                if _should_convert_span(raw_text, font_name, font_info, font_lookup):
                     legacy_fonts.add(font_name)
-                    converted_text = _convert_span(raw_text, font_name, font_info)
+                    converted_text = _convert_span(raw_text, font_name, font_info, font_lookup)
                     converted_chars += len(raw_text)
                 else:
                     converted_text = raw_text
@@ -344,17 +484,15 @@ def extract_page_direct(page: fitz.Page, font_lookup: dict[str, dict[str, Any]] 
             block_lines.append(line_text)
         
         if block_lines:
-            blocks_output.append("\n".join(block_lines))
+            y0 = float(block_bbox[1]) if block_bbox else 0.0
+            blocks_output.append((y0, "\n".join(block_lines)))
     
-    # Combine blocks
-    raw_output = "\n\n".join(blocks_output)
+    # Combine blocks (y-order)
+    raw_output = "\n\n".join(text for _, text in sorted(blocks_output, key=lambda x: x[0]))
 
     # --- Merge table content at correct positions in output ---
     if tables:
-        # Build a list of (y0, text) for both normal blocks and tables
-        block_items: list[tuple[float, str]] = []
-        for blk, blk_text in zip(page_dict.get("blocks", []), blocks_output):
-            block_items.append((blk.get("bbox", (0, 0, 0, 0))[1], blk_text))
+        block_items: list[tuple[float, str]] = list(blocks_output)
         for tbl in tables:
             block_items.append((tbl["bbox"][1], "\n" + tbl["formatted"] + "\n"))
         block_items.sort(key=lambda x: x[0])
@@ -445,16 +583,23 @@ def extract_document_high_accuracy(pdf_bytes: bytes) -> dict[str, Any]:
     page_texts = [r["text"] for r in page_results if r.get("text", "").strip()]
     converted_text = _fix_common_errors("\n\n".join(page_texts))
 
-    # For Preeti PDFs, converted output should always win over raw ASCII passthrough.
+    # Prefer converted text whenever any legacy fonts were detected.
+    # Never prefer raw ASCII over converted Unicode for Nepali legacy docs.
     final_text = converted_text
     method = "direct_font_conversion"
-    if not font_analysis.get("dominant_family") == "preeti":
+    has_legacy = bool(font_analysis.get("legacy_fonts") or font_analysis.get("is_legacy"))
+    dominant = font_analysis.get("dominant_family")
+    if dominant in ("unicode", None) and not has_legacy and dominant != "preeti":
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             raw_pages = [_extract_page_raw(doc.load_page(i)) for i in range(len(doc))]
             doc.close()
             raw_text = _fix_common_errors("\n\n".join(p for p in raw_pages if p.strip()))
-            if score_text_quality(raw_text)["score"] > score_text_quality(converted_text)["score"] + 3.0:
+            # Only allow passthrough when raw already looks like Unicode Devanagari/English
+            if (
+                _devanagari_ratio(raw_text) >= 0.20
+                or score_text_quality(raw_text)["score"] > score_text_quality(converted_text)["score"] + 5.0
+            ) and _devanagari_ratio(converted_text) < 0.15:
                 final_text = raw_text
                 method = "unicode_passthrough"
         except Exception:

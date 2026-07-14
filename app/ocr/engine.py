@@ -19,7 +19,10 @@ from app.config import (
 )
 from app.logging_config import get_logger
 from app.ocr.layout import reconstruct_layout_from_data
-from app.ocr.nepali_postprocess import normalize_nepali_text
+from app.ocr.nepali_postprocess import (
+    normalize_ocr_content,
+    detect_content_script,
+)
 
 logger = get_logger("OCREngine")
 
@@ -142,12 +145,22 @@ def run_ocr(image: np.ndarray, lang: str, config: str | None = None) -> dict:
         min_confidence=40.0,
     )
     mean_conf, word_count = _mean_confidence(data)
+    char_confidences = [
+        float(data["conf"][i])
+        for i in range(len(data["conf"]))
+        if float(data["conf"][i]) >= 0 and str(data["text"][i]).strip()
+    ]
+
+    normalized = normalize_ocr_content(layout_text)
 
     return {
-        "text": normalize_nepali_text(layout_text),
+        "text": normalized,
         "mean_confidence": round(mean_conf, 2),
+        "ocr_confidence": round(mean_conf, 2),
         "word_count": word_count,
         "lang_used": lang,
+        "char_confidences": char_confidences,
+        "content_script": detect_content_script(normalized),
     }
 
 
@@ -190,3 +203,37 @@ def run_ocr_smart(image: np.ndarray, lang: str, *, fast: bool = False) -> dict:
             break
 
     return best
+
+
+def run_ocr_block(
+    image: np.ndarray,
+    lang: str = "auto",
+    *,
+    block_meta: dict | None = None,
+    fast: bool = False,
+) -> dict:
+    """
+    OCR a single image-ink block with language resolution and confidence.
+    """
+    resolved = _resolve_block_ocr_lang(lang, block_meta)
+    result = run_ocr_smart(image, resolved, fast=fast)
+    result["ocr_confidence"] = result.get("mean_confidence", 0.0)
+    result["lang_used"] = resolved
+    return result
+
+
+def _resolve_block_ocr_lang(
+    lang_hint: str,
+    block_meta: dict | None = None,
+) -> str:
+    """Resolve Tesseract language for Nepali / English / mixed blocks."""
+    meta = block_meta or {}
+    language = meta.get("language")
+
+    if lang_hint and lang_hint not in ("auto", ""):
+        return resolve_ocr_lang(lang_hint)
+    if language == "nep":
+        return resolve_ocr_lang("nep")
+    if language == "eng":
+        return resolve_ocr_lang("eng")
+    return resolve_ocr_lang("nep+eng")

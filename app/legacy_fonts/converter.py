@@ -143,7 +143,10 @@ def _convert_with_npttf2utf(text: str, map_name: str) -> str | None:
         result = mapper.map_to_unicode(text, from_font=from_font)
         if result and result != text:
             quality = conversion_quality(text, result)
-            if quality["devanagari_ratio"] >= 10 or _looks_like_preeti_date(text.strip()):
+            if quality["devanagari_ratio"] >= 40 or _looks_like_preeti_date(text.strip()):
+                return result
+            # Short tokens: allow lower ratio if any Devanagari appeared
+            if len(text.strip()) <= 12 and quality["devanagari_ratio"] >= 15:
                 return result
             logger.warning(
                 "npttf2utf low quality (%.1f%% Devanagari) for map %s",
@@ -187,8 +190,9 @@ def force_convert_legacy(text: str, map_name: str) -> str:
         from app.legacy_fonts.kantipur_map import kantipur_to_unicode
         return kantipur_to_unicode(text)
 
-    # Last resort: try Preeti (most common)
-    return _convert_with_builtin(text)
+    # Unknown map: do NOT silently apply Preeti — return original so caller can OCR
+    logger.warning("No converter for map '%s'; leaving text unchanged", map_name)
+    return text
 
 
 def convert_legacy_text(text: str, font_name: str) -> str:

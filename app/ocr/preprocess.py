@@ -142,13 +142,17 @@ def preprocess_for_ocr(
     *,
     aggressive: bool = False,
     digital: bool = False,
+    profile: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """
     Preprocessing pipeline optimized for Nepali OCR.
 
-    Digital pages use a fast grayscale enhancement path.
-    Scans use denoise + binarize, with stronger cleanup only on retry.
+    When ``profile`` is supplied (from ``analyze_image_block``), preprocessing
+    is adapted to detected skew, noise, shadows, and resolution.
     """
+    if profile:
+        return preprocess_adaptive(image_bgr, profile)
+
     img = _to_grayscale(image_bgr)
     img = _normalize_resolution(img, digital=digital)
 
@@ -164,3 +168,80 @@ def preprocess_for_ocr(
         img = _morphological_clean(img)
 
     return img
+
+
+def preprocess_adaptive(image_bgr: np.ndarray, profile: dict[str, Any]) -> np.ndarray:
+    """Apply preprocessing driven by an image analysis profile."""
+    img = _to_grayscale(image_bgr)
+    digital = profile.get("digital", False)
+
+    if profile.get("upscale"):
+        target = profile.get("target_min_dim", 1200)
+        h, w = img.shape[:2]
+        max_dim = max(h, w)
+        if max_dim < target:
+            scale = min(target / max_dim, 3.0)
+            img = cv2.resize(
+                img,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_CUBIC,
+            )
+
+    img = _normalize_resolution(img, digital=digital)
+
+    if profile.get("remove_shadows"):
+        img = _remove_shadows(img)
+
+    denoise = profile.get("denoise_level", "light")
+    if denoise == "strong":
+        img = _denoise_strong(img)
+    elif denoise == "medium":
+        img = _denoise_fast(img)
+        img = cv2.medianBlur(img, 3)
+
+    if profile.get("reduce_bleed"):
+        img = _reduce_bleed_through(img)
+
+    if digital:
+        return _digital_enhance(img)
+
+    img = _apply_clahe(img, clip_limit=2.4 if profile.get("aggressive") else 2.0)
+
+    if profile.get("deskew"):
+        img = _deskew_with_angle(img, profile.get("deskew_angle", 0.0))
+    else:
+        img = _deskew(img)
+
+    img = _binarize(img)
+
+    if profile.get("aggressive"):
+        img = _morphological_clean(img)
+
+    return img
+
+
+def _deskew_with_angle(img: np.ndarray, angle: float) -> np.ndarray:
+    if abs(angle) < 0.3 or abs(angle) > 20:
+        return img
+    h, w = img.shape[:2]
+    center = (w // 2, h // 2)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(
+        img, matrix, (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=255,
+    )
+
+
+def _remove_shadows(gray: np.ndarray) -> np.ndarray:
+    """Normalize uneven background illumination."""
+    dilated = cv2.dilate(gray, np.ones((7, 7), np.uint8))
+    bg = cv2.medianBlur(dilated, 21)
+    diff = cv2.absdiff(gray, bg)
+    return cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
+
+
+def _reduce_bleed_through(gray: np.ndarray) -> np.ndarray:
+    """Suppress faint bleed-through by raising mid-tone contrast."""
+    return cv2.convertScaleAbs(gray, alpha=1.15, beta=-12)

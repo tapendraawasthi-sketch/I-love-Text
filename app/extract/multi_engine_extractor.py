@@ -165,6 +165,26 @@ def extract_with_consensus(
     best_text = results[best_engine]["text"]
     best_score = results[best_engine]["score"]
 
+    # Never ship raw legacy ASCII as winner for Nepali docs — convert via direct_extract
+    if prefer_devanagari and best_score.get("devanagari", 0) < 15:
+        try:
+            from app.extract.direct_extract import extract_page_direct, score_text_quality
+            converted = extract_page_direct(page)
+            ctext = (converted.get("text") or "").strip()
+            if ctext:
+                cscore = score_text_quality(ctext)
+                if cscore["score"] > best_score.get("total", 0) + 2 or cscore["devanagari_ratio"] >= 20:
+                    best_text = ctext
+                    best_engine = "direct_legacy_convert"
+                    best_score = {
+                        "total": cscore["score"],
+                        "devanagari": cscore["devanagari_ratio"],
+                        "quality": cscore["score"],
+                        "length": len(ctext),
+                    }
+        except Exception as exc:
+            logger.debug("Legacy conversion overlay skipped: %s", exc)
+
     # Check consensus: do multiple engines agree?
     agreement = _check_consensus(results)
 

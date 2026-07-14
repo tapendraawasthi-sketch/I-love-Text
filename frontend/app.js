@@ -508,6 +508,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const fileSizeEl = document.getElementById('file-size-np');
 
         const aiConvertBtn = document.getElementById('ai-convert-btn');
+        const forensicTxtBtn = document.getElementById('forensic-txt-btn');
+        const fidelitySelect = document.getElementById('fidelity-select-np');
         const aiSpinner = aiConvertBtn.querySelector('.ai-spinner');
         const aiText = aiConvertBtn.querySelector('.ai-btn-text');
         const aiIcon = aiConvertBtn.querySelector('.ai-btn-icon');
@@ -547,6 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
             onFilesChosen(files) {
                 currentFiles = files;
                 aiConvertBtn.disabled = files.length === 0;
+                if (forensicTxtBtn) forensicTxtBtn.disabled = files.length === 0;
                 aiText.textContent = files.length > 1 ? `Convert ${files.length} files (.txt)` : 'Convert to Unicode (.txt)';
                 resultSection.classList.add('hidden');
                 batchList.classList.add('hidden');
@@ -560,6 +563,82 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         function hideProgress() {
             progressSection.classList.add('hidden');
+        }
+
+        if (forensicTxtBtn) {
+            const fBtnText = forensicTxtBtn.querySelector('.btn-text');
+            const fSpinner = forensicTxtBtn.querySelector('.spinner');
+            forensicTxtBtn.addEventListener('click', async () => {
+                if (!currentFiles.length) return;
+                const file = currentFiles[0];
+                hideError();
+                resultSection.classList.add('hidden');
+                forensicTxtBtn.disabled = true;
+                aiConvertBtn.disabled = true;
+                if (fBtnText) fBtnText.textContent = 'Extracting as-is…';
+                if (fSpinner) fSpinner.classList.remove('hidden');
+                showProgress();
+                setProgress(progressFill, progressLabel, 20, 100, 'Forensic as-is extraction…');
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('lang', 'auto');
+                    formData.append('mode', 'auto');
+                    formData.append('fidelity', (fidelitySelect && fidelitySelect.value) || 'forensic');
+                    formData.append('page_separators', 'true');
+                    formData.append('headers_footers', 'false');
+                    formData.append('quality_report', 'true');
+                    const resp = await fetch('/api/extract-txt', { method: 'POST', body: formData });
+                    setProgress(progressFill, progressLabel, 85, 100, 'Building .txt…');
+                    if (!resp.ok) {
+                        let detail = `Server error ${resp.status}`;
+                        try {
+                            const err = await resp.json();
+                            detail = err.detail || err.error || detail;
+                        } catch (_) { /* ignore */ }
+                        throw new Error(detail);
+                    }
+                    const fidelityHdr = resp.headers.get('X-Fidelity') || 'forensic';
+                    const methodHdr = resp.headers.get('X-Method') || '';
+                    const confHdr = resp.headers.get('X-Mean-Confidence') || '';
+                    const blob = await resp.blob();
+                    const text = await new Response(blob.slice()).text();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${file.name.replace(/\.[^/.]+$/, '')}_extracted.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    resultText.value = text;
+                    resultSection.classList.remove('hidden');
+                    metaPanel.innerHTML = '';
+                    const badge = document.createElement('div');
+                    badge.innerHTML = `<span class="ai-badge">As-is .txt (${escapeHtml(fidelityHdr)})</span>`;
+                    metaPanel.appendChild(badge);
+                    const addMeta = (label, value) => {
+                        const div = document.createElement('div');
+                        div.className = 'meta-item';
+                        div.innerHTML = `<strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(value))}`;
+                        metaPanel.appendChild(div);
+                    };
+                    addMeta('Fidelity', fidelityHdr);
+                    if (methodHdr) addMeta('Method', methodHdr);
+                    if (confHdr) addMeta('Confidence', `${confHdr}%`);
+                    addMeta('Output', 'Downloaded as .txt');
+                    setProgress(progressFill, progressLabel, 100, 100, 'Done');
+                    resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } catch (err) {
+                    showError(err.message || 'As-is extraction failed.');
+                } finally {
+                    forensicTxtBtn.disabled = currentFiles.length === 0;
+                    aiConvertBtn.disabled = currentFiles.length === 0;
+                    if (fBtnText) fBtnText.textContent = 'Download as-is .txt';
+                    if (fSpinner) fSpinner.classList.add('hidden');
+                    hideProgress();
+                }
+            });
         }
 
         async function convertOne(file) {

@@ -19,6 +19,7 @@ from typing import Any
 
 import fitz
 
+from app.nlp.pdf_font_parse import parse_pdf_font_name
 from app.logging_config import get_logger
 
 logger = get_logger("FontDetector")
@@ -100,6 +101,26 @@ def identify_font(font_name: str) -> dict[str, Any]:
         }
     """
     fl = font_name.lower().strip()
+    parsed = parse_pdf_font_name(font_name)
+    fl = parsed["normalized_name"]
+
+    # CID / Type0 Unicode fonts — passthrough
+    if parsed["is_cid"] and not any(
+        legacy in fl for legacy in (
+            "preeti", "kantipur", "sagarmatha", "himali", "aakriti", "pcs",
+        )
+    ):
+        return {
+            "raw_name": font_name,
+            "matched_name": parsed["base_name"],
+            "family": "unicode",
+            "is_legacy": False,
+            "conversion_map": None,
+            "is_subset": parsed["is_subset"],
+            "is_cid": True,
+            "subset_id": parsed["subset_id"],
+            "encoding": "unicode",
+        }
 
     # Walk registry longest-fragment-first for specificity
     for fragment in sorted(FONT_REGISTRY, key=len, reverse=True):
@@ -111,6 +132,11 @@ def identify_font(font_name: str) -> dict[str, Any]:
                 "family": entry["family"],
                 "is_legacy": entry["family"] != "unicode",
                 "conversion_map": entry["map"],
+                "is_subset": parsed["is_subset"],
+                "is_cid": parsed["is_cid"],
+                "subset_id": parsed["subset_id"],
+                "base_name": parsed["base_name"],
+                "encoding": "legacy" if entry["family"] != "unicode" else "unicode",
             }
 
     # Unknown — heuristic: if there is Devanagari in the font name itself → unicode
@@ -121,6 +147,11 @@ def identify_font(font_name: str) -> dict[str, Any]:
             "family": "unicode",
             "is_legacy": False,
             "conversion_map": None,
+            "is_subset": parsed["is_subset"],
+            "is_cid": parsed["is_cid"],
+            "subset_id": parsed["subset_id"],
+            "base_name": parsed["base_name"],
+            "encoding": "unicode",
         }
 
     return {
@@ -129,6 +160,11 @@ def identify_font(font_name: str) -> dict[str, Any]:
         "family": "unknown",
         "is_legacy": False,
         "conversion_map": None,
+        "is_subset": parsed["is_subset"],
+        "is_cid": parsed["is_cid"],
+        "subset_id": parsed["subset_id"],
+        "base_name": parsed["base_name"],
+        "encoding": "unknown",
     }
 
 
@@ -196,8 +232,9 @@ def guess_font_from_text(text: str) -> dict[str, Any]:
             if kantipur_score > preeti_score:
                 return {"family": "kantipur", "confidence": min(90, 50 + kantipur_score * 8)}
             return {"family": "preeti", "confidence": min(90, 50 + preeti_score * 8)}
-        # High ASCII but no pattern — could still be a legacy font
-        return {"family": "preeti", "confidence": 35}
+        # High ASCII but no legacy pattern — DO NOT guess Preeti.
+        # Wrong-map conversion is worse than leaving text for OCR.
+        return {"family": "unknown", "confidence": 20}
 
     return {"family": "unknown", "confidence": 10}
 
@@ -299,6 +336,9 @@ def analyse_document_fonts(pdf_bytes: bytes) -> dict[str, Any]:
 
         info["char_count"] = char_count
         info["confidence"] = confidence
+        info["encoding"] = "unicode" if info.get("family") == "unicode" else (
+            "legacy" if info.get("is_legacy") else "unknown"
+        )
         fonts_found.append(info)
 
         family_weight[info["family"]] += char_count
