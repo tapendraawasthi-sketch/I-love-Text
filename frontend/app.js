@@ -18,6 +18,14 @@ document.addEventListener('DOMContentLoaded', () => {
         return '.' + file.name.split('.').pop().toLowerCase();
     }
 
+    // Filenames are user-controlled (a person can upload a file named
+    // anything, including HTML). Escape before ever inserting into
+    // innerHTML.
+    function escapeHtml(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
     function showDeviceProfile() {
         const badge = document.getElementById('device-badge');
         if (!badge) return;
@@ -217,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
             entries.forEach((entry, i) => {
                 const li = document.createElement('li');
                 const when = new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                li.innerHTML = `<span class="history-name">${entry.name}</span><span class="history-time">${when}</span>`;
+                li.innerHTML = `<span class="history-name">${escapeHtml(entry.name)}</span><span class="history-time">${escapeHtml(when)}</span>`;
                 li.title = 'Click to restore this result';
                 li.addEventListener('click', () => {
                     textareaEl.value = entry.text;
@@ -663,7 +671,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const rows = files.map((file) => {
                 const row = document.createElement('div');
                 row.className = 'batch-row';
-                row.innerHTML = `<span class="batch-name">${file.name}</span><span class="batch-status">Waiting…</span>`;
+                row.innerHTML = `<span class="batch-name">${escapeHtml(file.name)}</span><span class="batch-status">Waiting…</span>`;
                 batchList.appendChild(row);
                 return row;
             });
@@ -696,7 +704,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     history.add(file.name, text);
                 } catch (err) {
                     results.push({ file, error: err.message || 'Conversion failed' });
-                    statusEl.innerHTML = `<span class="batch-err">✗ ${err.message || 'Failed'}</span>`;
+                    statusEl.innerHTML = `<span class="batch-err">✗ ${escapeHtml(err.message || 'Failed')}</span>`;
                     rows[i].classList.remove('batch-active');
                     rows[i].classList.add('batch-error');
                 }

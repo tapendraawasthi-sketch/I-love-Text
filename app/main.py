@@ -27,13 +27,15 @@ app = FastAPI(title="TextExtract", version="2.1.0")
 
 
 def attachment_disposition(filename: str) -> str:
-    """Build a header safe for non-ASCII filenames (e.g. Nepali)."""
-    ascii_fallback = filename.encode("ascii", "ignore").decode().strip()
-    ascii_fallback = "".join(
-        c if c.isalnum() or c in "._- " else "_" for c in ascii_fallback
-    ).strip("._- ") or "document_image.pdf"
-    if not ascii_fallback.lower().endswith(".pdf"):
-        ascii_fallback += ".pdf"
+    """Build a Content-Disposition header safe for non-ASCII filenames
+    (e.g. Nepali), preserving whatever extension `filename` actually has
+    rather than assuming PDF."""
+    stem, ext = os.path.splitext(filename)
+    ascii_stem = stem.encode("ascii", "ignore").decode().strip()
+    ascii_stem = "".join(
+        c if c.isalnum() or c in "._- " else "_" for c in ascii_stem
+    ).strip("._- ") or "document"
+    ascii_fallback = ascii_stem + (ext if ext else "")
     return (
         f'attachment; filename="{ascii_fallback}"; '
         f"filename*=UTF-8''{quote(filename)}"
@@ -42,7 +44,8 @@ def attachment_disposition(filename: str) -> str:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # no cookie/session auth exists; credentials
+    # would only widen the blast radius of the open origin policy above
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -70,7 +73,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"success": False, "detail": "Internal server error", "error": str(exc)}
+        content={"success": False, "detail": "Internal server error"},
     )
 
 
@@ -212,20 +215,16 @@ async def extract_txt_api(
         include_quality_report=quality_report,
     )
 
-    # Build safe download filename
+    # Build download filename, preserving non-ASCII (e.g. Nepali) names
+    # via the shared RFC 5987-aware helper instead of ASCII-slugifying them
+    # away.
     base = os.path.splitext(filename)[0]
-    safe_base = re.sub(r"[^\w\-]", "_", base)[:60] or "extracted"
-    download_name = f"{safe_base}_extracted.txt"
+    download_name = f"{base}_extracted.txt"
 
     return Response(
         content=txt_content.encode("utf-8"),
         media_type="text/plain; charset=utf-8",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="{safe_base}_extracted.txt"; '
-                f"filename*=UTF-8''{quote(download_name)}"
-            )
-        },
+        headers={"Content-Disposition": attachment_disposition(download_name)},
     )
 
 

@@ -45,7 +45,7 @@ def test_extract_words_keeps_low_confidence_devanagari():
 def test_ocr_page_images_processes_all_pages_when_single_worker(monkeypatch):
     calls: list[int] = []
 
-    def fake_ocr(image, lang, digital):
+    def fake_ocr(image, lang, digital, fast=False):
         calls.append(1)
         return {
             "text": f"page-{len(calls)}",

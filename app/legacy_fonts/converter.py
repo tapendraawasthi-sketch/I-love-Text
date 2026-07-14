@@ -197,7 +197,13 @@ def convert_legacy_text(text: str, font_name: str) -> str:
         return text
     if is_plain_ascii_text(text):
         return text
-    if not is_legacy_encoded(text) and not is_legacy_font(font_name):
+    # Content is the authoritative signal: never force-convert text that
+    # doesn't actually look legacy-encoded, even when font_name claims to
+    # be Preeti/Kantipur/etc. (e.g. a page's dominant declared font is
+    # Preeti but this particular span is already correct Unicode). Trusting
+    # font_name alone here previously caused already-correct Unicode to be
+    # run through Preeti-decoding rules and get its matras reordered.
+    if not is_legacy_encoded(text):
         return text
     if not is_legacy_font(font_name):
         return text
